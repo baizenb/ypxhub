@@ -1,4 +1,4 @@
---[[ YPX v12.2 ]]
+--[[ YPX v12.3 ]]
 local P=game:GetService("Players")
 local UIS=game:GetService("UserInputService")
 local TS=game:GetService("TweenService")
@@ -348,13 +348,29 @@ local function autoScanInteract()
       c=c+1
     end
   end
-  c=c+clickAllBtns({"buy","upgrade","claim","reward","collect","train","attack","click","open","use","equip","sell"})
+  c=c+clickAllBtns({"buy","buymax","buy max","max","upgrade","claim","reward","collect","train","attack","click","open","use","equip","sell","roll","reroll","purchase"})
   local fired=0
-  for _,ty in ipairs({"click","farm","buy","claim","potion","equip"}) do
+  for _,ty in ipairs({"click","farm","buy","claim","potion","equip","rune"}) do
     local r=findRemoteByType(ty)
     if r then fireRemote(r) fired=fired+1 end
   end
   if fired>0 then c=c+fired end
+  pcall(function()
+    local root=getRoot()
+    if root then
+      for _,o in pairs(WS:GetDescendants()) do
+        if o:IsA("BasePart") and not o:IsDescendantOf(LP.Character or Instance.new("Folder")) then
+          local ln=string.lower(o.Name)
+          if ln:match("pack") or ln:match("chest") or ln:match("reward") or ln:match("card") then
+            local d=(o.Position-root.Position).Magnitude
+            if d<300 then
+              if fT then pcall(function() fT(root,o,0) fT(root,o,1) end) c=c+1 end
+            end
+          end
+        end
+      end
+    end
+  end)
   return c
 end
 
@@ -605,13 +621,34 @@ LogSys.labels={}
 LogSys.panel=nil
 LogSys.scroll=nil
 function LogSys.add(msg,level)
+  local msgStr=tostring(msg)
+  if msgStr:find("RobloxReplicatedStorage",1,true) then return end
+  if msgStr:find("ReplicatedStorage.Packages",1,true) then return end
+  if msgStr:find("IntegrityCheck",1,true) then return end
+  if msgStr:find("GetServerVersion",1,true) then return end
+  if msgStr:find("GetServerType",1,true) then return end
+  if msgStr:find("GetServerChannel",1,true) then return end
+  if msgStr:find("ExperienceChat",1,true) then return end
+  if msgStr:find("PlayerProfile",1,true) then return end
+  if msgStr:find("PlayerBlock",1,true) then return end
+  if msgStr:find("SetUserActive",1,true) then return end
+  if msgStr:find("SetDialogInUse",1,true) then return end
+  if msgStr:find("ReferredPlayer",1,true) then return end
+  if msgStr:find("CanChatWith",1,true) then return end
+  if msgStr:find("CreateOrJoinParty",1,true) then return end
+  if msgStr:find("PlatformLeaderboard",1,true) then return end
+  if msgStr:find("ModerateChat",1,true) then return end
+  if msgStr:find("NewPlayerGroup",1,true) then return end
+  if msgStr:find("BuildExperience",1,true) then return end
+  if msgStr:find("ExpChatFeature",1,true) then return end
+  if msgStr:find("leifstout_networker",1,true) then return end
   local ts=string.format("[%02d:%02d:%02d]",os.date("%H"),os.date("%M"),os.date("%S"))
   local clr=C.Gray
   if level=="ok" then clr=C.Green
   elseif level=="warn" then clr=C.Orange
   elseif level=="err" then clr=C.Red
   elseif level=="info" then clr=C.BlueL end
-  local entry=ts.." "..tostring(msg)
+  local entry=ts.." "..msgStr
   table.insert(LogSys.lines,{text=entry,color=clr})
   if #LogSys.lines>LogSys.maxLines then table.remove(LogSys.lines,1) end
   if LogSys.scroll and LogSys.scroll.Parent then
@@ -831,12 +868,18 @@ function ESP.clear()
   ESP.obj={}
 end
 
+ESP.scanCache={}
+ESP.scanTimer=0
+
 function ESP.start()
   ESP.stop()
   ESP.en=true
-  local tick=0
+  ESP.scanTimer=0
+  ESP.scanCache={}
+  local distTimer=0
   ESP.conn=RS2.Heartbeat:Connect(function(dt)
-    tick=tick+dt
+    distTimer=distTimer+dt
+    ESP.scanTimer=ESP.scanTimer+dt
     for i=#ESP.obj,1,-1 do
       local o=ESP.obj[i]
       if not o.Adornee or not o.Adornee.Parent then
@@ -849,58 +892,14 @@ function ESP.start()
     end
     local root=getRoot()
     if not root then return end
-    local myChar=LP.Character
-    local allPlayers={}
-    for _,pl in pairs(P:GetPlayers()) do
-      if pl.Character then allPlayers[pl.Character]=true end
+    if ESP.scanTimer>=2 then
+      ESP.scanTimer=0
+      tspawn(function()
+        ESP.doScan(root)
+      end)
     end
-    if ESP.cfg.enemies then
-      for _,m in pairs(WS:GetDescendants()) do
-        if m:IsA("Model") and m~=myChar and not allPlayers[m] and not m:IsDescendantOf(myChar or Instance.new("Folder")) then
-          local h=m:FindFirstChildOfClass("Humanoid")
-          if h and h.Health>0 then
-            local p=m:FindFirstChild("HumanoidRootPart") or m:FindFirstChildWhichIsA("BasePart")
-            if p then
-              local d=(p.Position-root.Position).Magnitude
-              if d>3 and d<=ESP.cfg.distance then
-                local e=ESP.add(p,Color3.fromRGB(255,50,50),"敌人")
-                if e then e.prefix="敌人 " end
-              end
-            end
-          end
-        end
-      end
-    end
-    if ESP.cfg.items then
-      for _,o in pairs(WS:GetDescendants()) do
-        if o:IsA("BasePart") and not o:IsDescendantOf(LP.Character or Instance.new("Folder")) then
-          local ln=string.lower(o.Name)
-          if ln:match("chest") or ln:match("reward") or ln:match("pickup") or ln:match("item") or ln:match("coin") or ln:match("gem") then
-            local d=(o.Position-root.Position).Magnitude
-            if d>1 and d<=ESP.cfg.distance then
-              local e=ESP.add(o,Color3.fromRGB(50,255,50),"物品")
-              if e then e.prefix="物品 " end
-            end
-          end
-        end
-      end
-    end
-    if ESP.cfg.players then
-      for _,p in pairs(P:GetPlayers()) do
-        if p~=LP and p.Character then
-          local hrp=p.Character:FindFirstChild("HumanoidRootPart")
-          if hrp then
-            local d=(hrp.Position-root.Position).Magnitude
-            if d>1 and d<=ESP.cfg.distance then
-              local e=ESP.add(hrp,Color3.fromRGB(50,150,255),p.Name)
-              if e then e.prefix=p.Name.." " end
-            end
-          end
-        end
-      end
-    end
-    if tick>=0.2 then
-      tick=0
+    if distTimer>=0.3 then
+      distTimer=0
       for _,o in pairs(ESP.obj) do
         if o.Adornee and o.Adornee.Parent and o.label then
           pcall(function()
@@ -917,6 +916,87 @@ function ESP.start()
       end
     end
   end)
+end
+
+function ESP.doScan(root)
+  if not root or not root.Parent then return end
+  local myChar=LP.Character
+  local allPlayers={}
+  for _,pl in pairs(P:GetPlayers()) do
+    if pl.Character then allPlayers[pl.Character]=true end
+  end
+  local rp=root.Position
+  local maxD=ESP.cfg.distance
+  if ESP.cfg.enemies then
+    pcall(function()
+      for _,m in pairs(WS:GetChildren()) do
+        if m:IsA("Model") and m~=myChar and not allPlayers[m] then
+          local h=m:FindFirstChildOfClass("Humanoid")
+          if h and h.Health>0 then
+            local p=m:FindFirstChild("HumanoidRootPart") or m:FindFirstChildWhichIsA("BasePart")
+            if p then
+              local d=(p.Position-rp).Magnitude
+              if d>3 and d<=maxD then
+                local e=ESP.add(p,Color3.fromRGB(255,50,50),"敌人")
+                if e then e.prefix="敌人 " end
+              end
+            end
+          end
+        end
+      end
+    end)
+    pcall(function()
+      for _,folder in pairs(WS:GetChildren()) do
+        if folder:IsA("Folder") then
+          for _,m in pairs(folder:GetChildren()) do
+            if m:IsA("Model") and m~=myChar and not allPlayers[m] then
+              local h=m:FindFirstChildOfClass("Humanoid")
+              if h and h.Health>0 then
+                local p=m:FindFirstChild("HumanoidRootPart") or m:FindFirstChildWhichIsA("BasePart")
+                if p then
+                  local d=(p.Position-rp).Magnitude
+                  if d>3 and d<=maxD then
+                    local e=ESP.add(p,Color3.fromRGB(255,50,50),"敌人")
+                    if e then e.prefix="敌人 " end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end)
+  end
+  if ESP.cfg.items then
+    pcall(function()
+      for _,o in pairs(WS:GetDescendants()) do
+        if o:IsA("BasePart") and not o:IsDescendantOf(LP.Character or Instance.new("Folder")) then
+          local ln=string.lower(o.Name)
+          if ln:match("pack") or ln:match("chest") or ln:match("reward") or ln:match("pickup") or ln:match("item") or ln:match("coin") or ln:match("gem") or ln:match("orb") or ln:match("crystal") then
+            local d=(o.Position-rp).Magnitude
+            if d>1 and d<=maxD then
+              local e=ESP.add(o,Color3.fromRGB(50,255,50),"物品")
+              if e then e.prefix="物品 " end
+            end
+          end
+        end
+      end
+    end)
+  end
+  if ESP.cfg.players then
+    for _,p in pairs(P:GetPlayers()) do
+      if p~=LP and p.Character then
+        local hrp=p.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+          local d=(hrp.Position-rp).Magnitude
+          if d>1 and d<=maxD then
+            local e=ESP.add(hrp,Color3.fromRGB(50,150,255),p.Name)
+            if e then e.prefix=p.Name.." " end
+          end
+        end
+      end
+    end
+  end
 end
 
 function ESP.stop()
@@ -1000,7 +1080,7 @@ local tL=mk("TextLabel",{
 stk(tL,C.Blue,1.5,0.3)
 local sL=mk("TextLabel",{
   Parent=ls,BackgroundTransparency=1,Position=UDim2.new(0.5,-120,0.3,50),
-  Size=UDim2.new(0,240,0,18),Font=Enum.Font.GothamSemibold,Text="YPX  v12.2",
+  Size=UDim2.new(0,240,0,18),Font=Enum.Font.GothamSemibold,Text="YPX  v12.3",
   TextColor3=C.Gold,TextSize=13
 })
 local stT=mk("TextLabel",{
@@ -1198,7 +1278,7 @@ local function buildMain(gtn)
   })
   local vLbl=mk("TextLabel",{
     Parent=tb,BackgroundTransparency=1,Position=UDim2.new(1,-100,0,0),
-    Size=UDim2.new(0,50,1,0),Font=Enum.Font.GothamSemibold,Text="v12.2",
+    Size=UDim2.new(0,50,1,0),Font=Enum.Font.GothamSemibold,Text="v12.3",
     TextColor3=C.Gold,TextSize=10,TextXAlignment=Enum.TextXAlignment.Right
   })
   local mnB=mk("TextButton",{
@@ -1397,6 +1477,62 @@ local function buildMenu(sb,ct,gn)
       AS.AutoChest=false TM.stop("AutoChest")
     end
   end)
+  toggle(t1,"自动购买升级(Buy/Max)",false,function(v)
+    if v then
+      AS.AutoBuyUpg=true
+      log("自动购买升级已启动","info")
+      TM.start("AutoBuyUpg",0.5,function()
+        scanBtns()
+        local clicked=clickAllBtns({"buy","buymax","buy max","max","purchase","upgrade"})
+        if clicked>0 then
+          local r=findRemoteByType("buy")
+          if r then fireRemote(r) end
+          if math.random(1,20)==1 then log("自动购买: 点击了"..clicked.."个按钮","ok") end
+        end
+      end)
+    else
+      AS.AutoBuyUpg=false TM.stop("AutoBuyUpg")
+      log("自动购买升级已关闭","warn")
+    end
+  end)
+  toggle(t1,"自动开包(全图吸取)",false,function(v)
+    if v then
+      AS.AutoPack=true
+      log("自动开包已启动","info")
+      TM.start("AutoPack",1,function()
+        local root=getRoot()
+        if not root then return end
+        local found=false
+        pcall(function()
+          for _,o in pairs(WS:GetDescendants()) do
+            if o:IsA("BasePart") and not o:IsDescendantOf(LP.Character or Instance.new("Folder")) then
+              local ln=string.lower(o.Name)
+              if ln:match("pack") or ln:match("card") or ln:match("gacha") or ln:match("summon") or ln:match("roll") or ln:match("open") then
+                local d=(o.Position-root.Position).Magnitude
+                if d<500 then
+                  tspawn(function()
+                    tpTo(o,Vector3.new(0,3,0))
+                    twait(0.1)
+                    fireTouch(o)
+                    fireProx(o)
+                    fireCD(o)
+                  end)
+                  found=true
+                end
+              end
+            end
+          end
+        end)
+        clickBtn("open","roll","summon","gacha","spin","pull","pack")
+        local r=findRemoteByType("rune")
+        if r then fireRemote(r) end
+        if found and math.random(1,20)==1 then log("自动开包: 找到包/平台","ok") end
+      end)
+    else
+      AS.AutoPack=false TM.stop("AutoPack")
+      log("自动开包已关闭","warn")
+    end
+  end)
   toggle(t1,"全能自动(扫描交互全部)",false,function(v)
     if v then
       AS.AutoAll=true
@@ -1447,13 +1583,13 @@ local function buildMenu(sb,ct,gn)
     if v then
       AS.AutoUpgrade=true
       log("升级树扫描已启动","info")
-      TM.start("AutoUpgrade",1.5,function()
+      TM.start("AutoUpgrade",1,function()
         scanBtns()
         local clicked=0
         for n,b in pairs(btnCache) do
           local ln=string.lower(n)
           if b.Parent and b.Visible~=false and b.Active~=false then
-            local isUpg=ln:find("upgrade",1,true) or ln:find("level",1,true) or ln:find("boost",1,true) or ln:find("enhance",1,true) or ln:find("buy",1,true) or ln:find("purchase",1,true) or ln:find("invest",1,true) or ln:find("unlock",1,true)
+            local isUpg=ln:find("upgrade",1,true) or ln:find("level",1,true) or ln:find("boost",1,true) or ln:find("enhance",1,true) or ln:find("buy",1,true) or ln:find("purchase",1,true) or ln:find("invest",1,true) or ln:find("unlock",1,true) or ln:find("perk",1,true) or ln:find("skill",1,true) or ln:find("talent",1,true) or ln:find("allocate",1,true)
             if isUpg then
               pcall(function()
                 local canClick=true
@@ -1462,11 +1598,6 @@ local function buildMenu(sb,ct,gn)
                   if txt:find("max",1,true) or txt:find("locked",1,true) or txt:find("full",1,true) or txt:find("满级",1,true) or txt:find("已满",1,true) then
                     canClick=false
                   end
-                end
-                if b:IsA("ImageButton") then
-                  pcall(function()
-                    if b.ImageColor3==C.Gray then canClick=false end
-                  end)
                 end
                 if canClick then
                   if fS then pcall(fS,b.Activated) pcall(fS,b.MouseButton1Click) end
@@ -1483,11 +1614,49 @@ local function buildMenu(sb,ct,gn)
             end
           end
         end
+        pcall(function()
+          local pg=LP:FindFirstChild("PlayerGui")
+          if pg then
+            for _,frame in pairs(pg:GetDescendants()) do
+              if (frame:IsA("Frame") or frame:IsA("ImageButton") or frame:IsA("TextButton")) and frame.Parent then
+                local hasLevelText=false
+                local isMaxed=false
+                pcall(function()
+                  for _,child in pairs(frame:GetChildren()) do
+                    if child:IsA("TextLabel") then
+                      local txt=child.Text or ""
+                      local cur,max=txt:match("^(%d+)%s*/%s*(%d+)$")
+                      if cur and max then
+                        hasLevelText=true
+                        if tonumber(cur)>=tonumber(max) then isMaxed=true end
+                      end
+                    end
+                  end
+                end)
+                if hasLevelText and not isMaxed then
+                  pcall(function()
+                    if frame:IsA("ImageButton") or frame:IsA("TextButton") then
+                      if fS then pcall(fS,frame.Activated) pcall(fS,frame.MouseButton1Click) end
+                      pcall(function() frame:Activate() end)
+                      pcall(function()
+                        local cx=frame.AbsolutePosition.X+frame.AbsoluteSize.X/2
+                        local cy=frame.AbsolutePosition.Y+frame.AbsoluteSize.Y/2
+                        VIM:SendMouseButtonEvent(cx,cy,0,true,frame,1)
+                        VIM:SendMouseButtonEvent(cx,cy,0,false,frame,1)
+                      end)
+                      clicked=clicked+1
+                    end
+                  end)
+                end
+              end
+            end
+          end
+        end)
         local r=findRemoteByType("buy")
         if r then fireRemote(r) end
         local r2=findRemoteByType("perk")
         if r2 then fireRemote(r2) end
-        if clicked>0 then log("升级树: 点击了"..clicked.."个升级按钮","ok") end
+        if clicked>0 and math.random(1,15)==1 then log("升级树: 点击了"..clicked.."个按钮","ok") end
       end)
     else
       AS.AutoUpgrade=false TM.stop("AutoUpgrade")
@@ -1523,13 +1692,29 @@ local function buildMenu(sb,ct,gn)
   toggle(t3,"自动抽符文",false,function(v)
     if v then
       AS.AutoRune=true
-      TM.start("AutoRune",1,function()
+      log("自动抽符文已启动","info")
+      TM.start("AutoRune",0.5,function()
         local r=findRemoteByType("rune")
         if r then fireRemote(r) end
         clickBtn("rune","roll","reroll","pull","gacha","spin","open")
       end)
     else
       AS.AutoRune=false TM.stop("AutoRune")
+      log("自动抽符文已关闭","warn")
+    end
+  end)
+  toggle(t3,"自动Roll(眼睛/血统)",false,function(v)
+    if v then
+      AS.AutoRoll=true
+      log("自动Roll已启动","info")
+      TM.start("AutoRoll",0.3,function()
+        clickBtn("roll","reroll","roll eyes","rolleyes","bloodline","reroll bloodline")
+        local r=getRemoteFuzzy("roll","reroll","rolleyes","roll_eyes","rollbloodline","roll_bloodline","rollblood","roll_blood")
+        if r then fireRemote(r) end
+      end)
+    else
+      AS.AutoRoll=false TM.stop("AutoRoll")
+      log("自动Roll已关闭","warn")
     end
   end)
   toggle(t3,"自动装备",false,function(v)
@@ -1751,7 +1936,7 @@ local function buildMenu(sb,ct,gn)
     end
     notif("已输出 "..c.." 个按钮到日志",C.Blue)
   end)
-  log("YPX v12.2 日志系统就绪","ok")
+  log("YPX v12.3 日志系统就绪","ok")
 end
 
 local TN={universal="通用模式",anime_incremental="Anime Inc."}
@@ -1877,7 +2062,7 @@ tspawn(function()
   end)
 
   -- 加载通知
-  local nt=ok and ("✅ "..(TN[gT] or "通用").."  v12.2") or "⚠️ 维护模式"
+  local nt=ok and ("✅ "..(TN[gT] or "通用").."  v12.3") or "⚠️ 维护模式"
   local nf=mk("TextLabel",{
     Parent=sg,BackgroundColor3=ok and C.BlueD or C.Orange,BorderSizePixel=0,
     Position=UDim2.new(0.5,-130,0,-40),Size=UDim2.new(0,260,0,34),
@@ -1892,7 +2077,7 @@ tspawn(function()
   end)
 
   print("═══════════════════════════════════")
-  print("  ✅ YPX v12.2 已加载!")
+  print("  ✅ YPX v12.3 已加载!")
   print("  游戏类型: "..(TN[gT] or "通用"))
   print("  游戏名称: "..tostring(gN))
   print("  PlaceId: "..tostring(pId))
