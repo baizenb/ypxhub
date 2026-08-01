@@ -1,4 +1,4 @@
---[[ YPX v12.5 ]]
+--[[ YPX v12.6 ]]
 local P=game:GetService("Players")
 local UIS=game:GetService("UserInputService")
 local TS=game:GetService("TweenService")
@@ -22,6 +22,12 @@ pcall(function() fT=firetouchinterest end)
 pcall(function() fP=fireproximityprompt end)
 pcall(function() fC=fireclickdetector end)
 pcall(function() fS=firesignal end)
+
+-- hookmetamethod/getnamecallmethod 检测(用于全局拦截FireServer/InvokeServer)
+local hMM,gNC,hF
+pcall(function() hMM=hookmetamethod end)
+pcall(function() gNC=getnamecallmethod end)
+pcall(function() hF=hookfunction end)
 
 -- 早期log/notif stub(后续替换为真实实现,保证定义顺序不影响调用)
 local log=function() end
@@ -235,6 +241,134 @@ local function spyArgsKey(args)
   return table.concat(parts,",")
 end
 
+-- ==================== RemoteCapture 自动捕获引擎 ====================
+-- 核心引擎: 用hookmetamethod(__namecall)全局拦截所有FireServer/InvokeServer
+-- 脚本加载时自动安装,游戏正常运行的远程调用会被自动捕获(带真实参数)
+-- 自动功能开启时,用捕获到的真实参数回放,而不是盲打无参数FireServer
+local RC={}
+RC.captured={}       -- key -> {name,remote,path,args,method,time}
+RC.byName={}         -- name -> {cap1,cap2,...}
+RC.recording=true    -- 默认开启自动捕获(不需要用户操作)
+RC.hookInstalled=false
+RC.totalCaptured=0
+RC.hookMode="none"   -- "namecall" / "hookfunction" / "hookRemote" / "none"
+
+-- 捕获一次远程调用(去重)
+function RC.capture(remote,method,args)
+  if not remote or not args then return end
+  local name=remote.Name or "?"
+  local key=name.."|"..method.."|"..spyArgsKey(args)
+  if RC.captured[key] then return end
+  local path=name
+  pcall(function() path=remote:GetFullName() end)
+  local cap={name=name,remote=remote,path=path,args=args,method=method,time=os.date("%H:%M:%S")}
+  RC.captured[key]=cap
+  RC.totalCaptured=RC.totalCaptured+1
+  if not RC.byName[name] then RC.byName[name]={} end
+  table.insert(RC.byName[name],cap)
+  if RC.totalCaptured<=50 then
+    log("[AUTO-CAPTURE#"..RC.totalCaptured.."] "..name.."("..spyArgsKey(args)..")","info")
+  end
+end
+
+-- 安装全局hook(在脚本加载时调用,自动捕获游戏所有远程调用)
+function RC.install()
+  if RC.hookInstalled then return end
+
+  -- 方式1: hookmetamethod __namecall (最佳方案,全局拦截所有Instance调用)
+  if hMM and gNC then
+    local ok,err=pcall(function()
+      local oldNamecall
+      oldNamecall=hMM(game,"__namecall",function(self,...)
+        local method=gNC()
+        if RC.recording and (method=="FireServer" or method=="InvokeServer") then
+          local captureArgs={...}
+          pcall(function()
+            if typeof(self)=="Instance" and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction")) then
+              RC.capture(self,method,captureArgs)
+            end
+          end)
+        end
+        return oldNamecall(self,...)
+      end)
+    end)
+    if ok then
+      RC.hookInstalled=true RC.hookMode="namecall"
+      log("RC: hookmetamethod __namecall 已安装,自动捕获启动","ok")
+      return
+    else
+      log("RC: hookmetamethod失败: "..tostring(err),"warn")
+    end
+  end
+
+  -- 方式2: hookfunction 拦截FireServer/InvokeServer
+  if hF then
+    local ok2=pcall(function()
+      local oldFS=Instance.new("RemoteEvent").FireServer
+      hF(oldFS,function(self,...)
+        local fsArgs={...}
+        if RC.recording then pcall(function() RC.capture(self,"FireServer",fsArgs) end) end
+        return oldFS(self,...)
+      end)
+    end)
+    if ok2 then
+      RC.hookInstalled=true RC.hookMode="hookfunction"
+      log("RC: hookfunction 已安装","ok")
+      return
+    end
+  end
+
+  -- 方式3: 逐个hookRemote (备用方案)
+  pcall(hookAllRemotes)
+  RC.hookInstalled=true RC.hookMode="hookRemote"
+  log("RC: 使用hookRemote备用方式","warn")
+end
+
+-- 按关键词重放已捕获的调用(带真实参数)
+function RC.replay(kw)
+  local lkw=string.lower(kw)
+  local played=0
+  for key,cap in pairs(RC.captured) do
+    if string.find(string.lower(cap.name),lkw,1,true) then
+      if cap.remote and cap.remote.Parent then
+        pcall(function()
+          if cap.method=="FireServer" then
+            cap.remote:FireServer(unpack(cap.args))
+          else
+            cap.remote:InvokeServer(unpack(cap.args))
+          end
+          played=played+1
+        end)
+      end
+    end
+  end
+  return played
+end
+
+-- 智能调用: 先用RC捕获参数回放,再用Spy记录回放,最后模糊匹配Remote直调
+local function smartCall(kw,...)
+  -- 优先级1: RC自动捕获的参数回放(带真实参数,最可靠)
+  local played=RC.replay(kw)
+  if played>0 then return played end
+  -- 优先级2: Spy手动录制的参数回放
+  played=Spy.replay(kw)
+  if played>0 then return played end
+  -- 优先级3: 模糊匹配Remote名称直调(可能需要参数,作为最后手段)
+  for _,k in ipairs({...}) do
+    local r=getRemoteFuzzy(k)
+    if r then fireRemote(r) return 1 end
+  end
+  return 0
+end
+
+-- 获取已捕获总数
+function RC.count() return RC.totalCaptured end
+
+-- 清空
+function RC.clear()
+  RC.captured={} RC.byName={} RC.totalCaptured=0
+end
+
 local function hookRemote(r)
   if not r then return end
   local mt
@@ -253,8 +387,11 @@ local function hookRemote(r)
     local oldFire=r.FireServer
     pcall(function() rawset(r,key1,true) end)
     r.FireServer=function(self,...)
+      local args={...}
+      -- 总是自动捕获到RC(带真实参数)
+      if RC.recording then pcall(function() RC.capture(r,"FireServer",args) end) end
+      -- Spy手动录制(仅当用户开启时)
       if Spy.recording then
-        local args={...}
         local dk=name.."|"..spyArgsKey(args)
         if not Spy.recordMap[dk] then
           Spy.recordMap[dk]=true
@@ -269,8 +406,11 @@ local function hookRemote(r)
     local oldInvoke=r.InvokeServer
     pcall(function() rawset(r,key2,true) end)
     r.InvokeServer=function(self,...)
+      local args={...}
+      -- 总是自动捕获到RC(带真实参数)
+      if RC.recording then pcall(function() RC.capture(r,"InvokeServer",args) end) end
+      -- Spy手动录制(仅当用户开启时)
       if Spy.recording then
-        local args={...}
         local dk=name.."|"..spyArgsKey(args)
         if not Spy.recordMap[dk] then
           Spy.recordMap[dk]=true
@@ -541,14 +681,19 @@ local function autoScanInteract()
       c=c+1
     end
   end
-  -- v12.5: 纯远程调用,不点击任何按钮,不干扰用户触摸
+  -- v12.6: RC自动捕获参数优先回放,带真实参数,不盲打
   local fired=0
-  -- 1. 优先Spy重放所有类型
+  -- 1. 优先RC自动捕获的参数回放(带真实参数,最可靠)
+  for _,ty in ipairs({"click","farm","buy","claim","potion","equip","rune","sell","roll","open","upgrade","train","attack"}) do
+    local played=RC.replay(ty)
+    if played>0 then fired=fired+played end
+  end
+  -- 2. Spy手动录制回放
   for _,ty in ipairs({"click","farm","buy","claim","potion","equip","rune","sell","roll","open","upgrade","train","attack"}) do
     local played=Spy.replay(ty)
     if played>0 then fired=fired+played end
   end
-  -- 2. Remote直调
+  -- 3. Remote直调(最后手段,可能无参数无效)
   for _,ty in ipairs({"click","farm","buy","claim","potion","equip","rune","sell"}) do
     local r=findRemoteByType(ty)
     if r then fireRemote(r) fired=fired+1 end
@@ -973,12 +1118,35 @@ function AD.scan()
   return c
 end
 
--- 启动循环
+-- 启动循环(v12.6: 优先用RC捕获的真实参数回放,而非盲打无参数)
 function AD.startLoop(r)
   local n=r.Name
   AD.loops[n]=true
   TM.start("AD_"..n,AD.interval,function()
-    pcall(function() fireRemote(r) end)
+    -- 1. 优先用RC捕获的真实参数回放
+    local played=0
+    if RC.byName[n] then
+      for _,cap in ipairs(RC.byName[n]) do
+        pcall(function()
+          if cap.remote and cap.remote.Parent then
+            if cap.method=="FireServer" then
+              cap.remote:FireServer(unpack(cap.args))
+            else
+              cap.remote:InvokeServer(unpack(cap.args))
+            end
+            played=played+1
+          end
+        end)
+      end
+    end
+    -- 2. 如果没有捕获参数,用Spy录制的参数
+    if played==0 then
+      played=Spy.replay(n)
+    end
+    -- 3. 最后手段: 无参数直调(可能无效,但有些Remote不需要参数)
+    if played==0 then
+      pcall(function() fireRemote(r) end)
+    end
   end)
 end
 
@@ -1015,8 +1183,13 @@ function AD.generate(container)
   end
 
   -- 统计
-  local info=mk("TextLabel",{Parent=container,BackgroundTransparency=1,Size=UDim2.new(1,-4,0,20),Font=Enum.Font.GothamBold,Text="发现 "..total.." 个Remote | 间隔: "..AD.interval.."s",TextColor3=C.BlueL,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left})
+  local rcCount=RC.count()
+  local info=mk("TextLabel",{Parent=container,BackgroundTransparency=1,Size=UDim2.new(1,-4,0,20),Font=Enum.Font.GothamBold,Text="发现 "..total.." 个Remote | 已捕获 "..rcCount.." 个调用 | 间隔: "..AD.interval.."s",TextColor3=C.BlueL,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left})
   table.insert(AD.widgets,info)
+
+  -- 捕获状态提示
+  local rcStatus=mk("TextLabel",{Parent=container,BackgroundTransparency=1,Size=UDim2.new(1,-4,0,16),Font=Enum.Font.GothamSemibold,Text=rcCount>0 and "✅ 已自动捕获参数,循环将使用真实参数回放" or "⏳ 等待游戏产生远程调用以捕获参数...",TextColor3=rcCount>0 and C.Green or C.Orange,TextSize=9,TextXAlignment=Enum.TextXAlignment.Left})
+  table.insert(AD.widgets,rcStatus)
 
   -- 全部循环
   local allOn=false
@@ -1068,12 +1241,16 @@ function AD.generate(container)
       -- 单条toggle
       for _,r in ipairs(items) do
         local dn=r.Name
-        if #dn>35 then dn=dn:sub(1,32).."..." end
-        local cls=r:IsA("RemoteEvent") and "Event" or "Func"
+        if #dn>30 then dn=dn:sub(1,27).."..." end
+        local cls=r:IsA("RemoteEvent") and "EV" or "FN"
+        -- 检查是否有捕获参数
+        local hasCap=RC.byName[r.Name] and #RC.byName[r.Name]>0
+        local capTag=hasCap and " ✓参数" or " ⚠无参"
+        local capColor=hasCap and C.Green or C.Orange
         local h=mk("Frame",{Parent=container,BackgroundColor3=C.Card,BorderSizePixel=0,Size=UDim2.new(1,-4,0,30)})
-        crn(h,8) stk(h,C.Div,1) grd(h,C.Card,C.CardH,90)
+        crn(h,8) stk(h,hasCap and C.Green or C.Div,1) grd(h,C.Card,C.CardH,90)
         table.insert(AD.widgets,h)
-        mk("TextLabel",{Parent=h,BackgroundTransparency=1,Position=UDim2.new(0,10,0,0),Size=UDim2.new(1,-56,1,0),Font=Enum.Font.GothamSemibold,Text="  "..dn.."  ["..cls.."]",TextColor3=C.White,TextSize=9,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+        mk("TextLabel",{Parent=h,BackgroundTransparency=1,Position=UDim2.new(0,10,0,0),Size=UDim2.new(1,-56,1,0),Font=Enum.Font.GothamSemibold,Text="  "..dn.."  ["..cls.."]"..capTag,TextColor3=C.White,TextSize=9,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
         local tog=mk("TextButton",{Parent=h,BackgroundColor3=C.Off,BorderSizePixel=0,Position=UDim2.new(1,-40,0.5,-9),Size=UDim2.new(0,32,0,18),Text="",AutoButtonColor=false})
         crn(tog,99)
         local kb=mk("Frame",{Parent=tog,BackgroundColor3=C.White,BorderSizePixel=0,Size=UDim2.new(0,12,0,12),Position=UDim2.new(0,3,0.5,-6)})
@@ -1083,7 +1260,7 @@ function AD.generate(container)
           on=v
           tw(tog,{BackgroundColor3=v and C.On or C.Off})
           tw(kb,{Position=v and UDim2.new(1,-15,0.5,-6) or UDim2.new(0,3,0.5,-6)})
-          if v then AD.startLoop(r) log("AD循环: "..r.Name,"ok")
+          if v then AD.startLoop(r) log("AD循环: "..r.Name..(hasCap and "(带参数)" or "(无参数)"),"ok")
           else AD.stopLoop(r) end
         end
         tog.MouseButton1Click:Connect(function() setAD(not on) end)
@@ -1488,6 +1665,14 @@ function PM.stop()
   TM.stop("PerfMon")
 end
 
+-- ==================== 安装RC自动捕获(必须在加载界面之前) ====================
+-- 脚本加载时就安装hook,游戏自己的初始化远程调用会被自动捕获
+-- 这样用户开启自动功能时,已经有捕获到的真实参数可用
+tspawn(function()
+  twait(0.5) -- 等待游戏基础环境初始化
+  pcall(function() RC.install() end)
+end)
+
 -- ==================== 加载界面 ====================
 local ls=mk("Frame",{
   Parent=sg,BackgroundColor3=C.BG,BorderSizePixel=0,Size=UDim2.new(1,0,1,0)
@@ -1501,7 +1686,7 @@ local tL=mk("TextLabel",{
 stk(tL,C.Blue,1.5,0.3)
 local sL=mk("TextLabel",{
   Parent=ls,BackgroundTransparency=1,Position=UDim2.new(0.5,-120,0.3,50),
-  Size=UDim2.new(0,240,0,18),Font=Enum.Font.GothamSemibold,Text="YPX  v12.5",
+  Size=UDim2.new(0,240,0,18),Font=Enum.Font.GothamSemibold,Text="YPX  v12.6",
   TextColor3=C.Gold,TextSize=13
 })
 local stT=mk("TextLabel",{
@@ -1545,7 +1730,7 @@ local function getGameInfo()
   while not done and t<2 do twait(0.1) t=t+0.1 end
   return pid,pn
 end
-local GDB={[7295742428]="anime_incremental"}
+local GDB={[75776571537058]="anime_incremental",[7295742428]="anime_incremental"}
 local KDB={
   {keyword="anime incremental",type="anime_incremental"},
   {keyword="incremental",type="anime_incremental"}
@@ -1700,7 +1885,7 @@ local function buildMain(gtn)
   })
   local vLbl=mk("TextLabel",{
     Parent=tb,BackgroundTransparency=1,Position=UDim2.new(1,-100,0,0),
-    Size=UDim2.new(0,50,1,0),Font=Enum.Font.GothamSemibold,Text="v12.5",
+    Size=UDim2.new(0,50,1,0),Font=Enum.Font.GothamSemibold,Text="v12.6",
     TextColor3=C.Gold,TextSize=10,TextXAlignment=Enum.TextXAlignment.Right
   })
   local mnB=mk("TextButton",{
@@ -1874,8 +2059,12 @@ local function buildMenu(sb,ct,gn)
             fireProx(best)
             fireCD(best)
             VFX.target(best)
-            -- v12.5: 纯远程调用攻击,不点击任何按钮,不干扰用户
-            local played=Spy.replay("attack")
+            -- v12.6: RC自动捕获参数优先回放,带真实参数
+            local played=RC.replay("attack")
+            if played==0 then played=RC.replay("click") end
+            if played==0 then played=RC.replay("train") end
+            if played==0 then played=RC.replay("farm") end
+            if played==0 then played=Spy.replay("attack") end
             if played==0 then played=Spy.replay("click") end
             if played==0 then played=Spy.replay("train") end
             if played==0 then played=Spy.replay("farm") end
@@ -1925,19 +2114,26 @@ local function buildMenu(sb,ct,gn)
       AS.AutoBuyUpg=true
       log("自动购买升级已启动","info")
       TM.start("AutoBuyUpg",0.5,function()
-        -- v12.5: Spy/Remote优先,clickAllBtns降为最后手段(静默firesignal,不干扰用户)
+        -- v12.6: RC自动捕获参数优先,带真实参数
         local done=false
-        -- 1. Spy重放
-        local played=Spy.replay("buy")
-        if played==0 then played=Spy.replay("upgrade") end
-        if played==0 then played=Spy.replay("purchase") end
+        -- 1. RC自动捕获回放(带真实参数,最可靠)
+        local played=RC.replay("buy")
+        if played==0 then played=RC.replay("upgrade") end
+        if played==0 then played=RC.replay("purchase") end
         if played>0 then done=true end
-        -- 2. Remote直调
+        -- 2. Spy手动录制回放
+        if not done then
+          played=Spy.replay("buy")
+          if played==0 then played=Spy.replay("upgrade") end
+          if played==0 then played=Spy.replay("purchase") end
+          if played>0 then done=true end
+        end
+        -- 3. Remote直调
         if not done then
           local r=findRemoteByType("buy")
           if r then fireRemote(r) done=true end
         end
-        -- 3. 最后fallback: 静默firesignal(不用VIM,不干扰用户触摸)
+        -- 4. 最后fallback: 静默firesignal(不用VIM,不干扰用户触摸)
         if not done then
           scanBtns()
           local clicked=clickAllBtns({"buy","buymax","buy max","max","purchase","upgrade"})
@@ -1977,11 +2173,18 @@ local function buildMenu(sb,ct,gn)
             end
           end
         end)
-        -- v12.5: Spy/Remote优先,clickBtn降为最后手段(静默firesignal)
-        local played=Spy.replay("pack")
-        if played==0 then played=Spy.replay("open") end
-        if played==0 then played=Spy.replay("gacha") end
-        if played==0 then played=Spy.replay("roll") end
+        -- v12.6: RC自动捕获参数优先回放
+        local played=RC.replay("pack")
+        if played==0 then played=RC.replay("open") end
+        if played==0 then played=RC.replay("gacha") end
+        if played==0 then played=RC.replay("roll") end
+        -- Spy手动录制回放
+        if played==0 then
+          played=Spy.replay("pack")
+          if played==0 then played=Spy.replay("open") end
+          if played==0 then played=Spy.replay("gacha") end
+          if played==0 then played=Spy.replay("roll") end
+        end
         -- Remote直调
         if played==0 then
           local r=findRemoteByType("rune")
@@ -2036,8 +2239,15 @@ local function buildMenu(sb,ct,gn)
       AS.AutoRebirth=true
       log("自动重生已启动","info")
       TM.start("AutoRebirth",2,function()
-        -- 优先用Spy记录重放
-        local played=Spy.replay("rebirth")
+        -- v12.6: RC自动捕获参数优先
+        local played=RC.replay("rebirth")
+        if played>0 then return end
+        played=RC.replay("prestige")
+        if played>0 then return end
+        played=RC.replay("ascend")
+        if played>0 then return end
+        -- Spy手动录制回放
+        played=Spy.replay("rebirth")
         if played>0 then return end
         played=Spy.replay("prestige")
         if played>0 then return end
@@ -2057,7 +2267,11 @@ local function buildMenu(sb,ct,gn)
       AS.AutoClaim=true
       log("自动领取已启动","info")
       TM.start("AutoClaim",2,function()
-        local played=Spy.replay("claim")
+        local played=RC.replay("claim")
+        if played>0 then return end
+        played=RC.replay("reward")
+        if played>0 then return end
+        played=Spy.replay("claim")
         if played>0 then return end
         played=Spy.replay("reward")
         if played>0 then return end
@@ -2076,8 +2290,15 @@ local function buildMenu(sb,ct,gn)
       AS.AutoRune=true
       log("自动抽符文已启动","info")
       TM.start("AutoRune",0.5,function()
-        -- 优先Spy重放
-        local played=Spy.replay("rune")
+        -- v12.6: RC自动捕获参数优先
+        local played=RC.replay("rune")
+        if played>0 then return end
+        played=RC.replay("roll")
+        if played>0 then return end
+        played=RC.replay("gacha")
+        if played>0 then return end
+        -- Spy手动录制回放
+        played=Spy.replay("rune")
         if played>0 then return end
         played=Spy.replay("roll")
         if played>0 then return end
@@ -2115,8 +2336,9 @@ local function buildMenu(sb,ct,gn)
                     fireTouch(o)
                     fireProx(o)
                     fireCD(o)
-                    -- 优先Spy重放
-                    local played=Spy.replay("rune")
+                    -- v12.6: RC优先回放
+                    local played=RC.replay("rune")
+                    if played==0 then played=Spy.replay("rune") end
                     if played==0 then
                       local r=getRemoteFuzzy("collectrune","collect_rune","pickuprune","pickup_rune","claimrune","claim_rune","getrune","get_rune","rune")
                       if r then fireRemote(r) end
@@ -2132,7 +2354,8 @@ local function buildMenu(sb,ct,gn)
           end
         end)
         if not collected then
-          local played=Spy.replay("rune")
+          local played=RC.replay("rune")
+          if played==0 then played=Spy.replay("rune") end
           if played==0 then
             local r=findRemoteByType("rune")
             if r then fireRemote(r) end
@@ -2149,7 +2372,13 @@ local function buildMenu(sb,ct,gn)
       AS.AutoRoll=true
       log("自动Roll已启动","info")
       TM.start("AutoRoll",0.5,function()
-        local played=Spy.replay("roll")
+        local played=RC.replay("roll")
+        if played>0 then return end
+        played=RC.replay("reroll")
+        if played>0 then return end
+        played=RC.replay("bloodline")
+        if played>0 then return end
+        played=Spy.replay("roll")
         if played>0 then return end
         played=Spy.replay("reroll")
         if played>0 then return end
@@ -2168,7 +2397,9 @@ local function buildMenu(sb,ct,gn)
       AS.AutoEquip=true
       log("自动装备已启动","info")
       TM.start("AutoEquip",2,function()
-        local played=Spy.replay("equip")
+        local played=RC.replay("equip")
+        if played>0 then return end
+        played=Spy.replay("equip")
         if played>0 then return end
         local r=findRemoteByType("equip")
         if r then fireRemote(r) end
@@ -2183,7 +2414,9 @@ local function buildMenu(sb,ct,gn)
       AS.AutoSell=true
       log("自动出售已启动","info")
       TM.start("AutoSell",2,function()
-        local played=Spy.replay("sell")
+        local played=RC.replay("sell")
+        if played>0 then return end
+        played=Spy.replay("sell")
         if played>0 then return end
         local r=findRemoteByType("sell")
         if r then fireRemote(r) end
@@ -2200,7 +2433,13 @@ local function buildMenu(sb,ct,gn)
       AS.AutoPerk=true
       log("自动天赋已启动","info")
       TM.start("AutoPerk",1,function()
-        local played=Spy.replay("perk")
+        local played=RC.replay("perk")
+        if played>0 then return end
+        played=RC.replay("talent")
+        if played>0 then return end
+        played=RC.replay("skill")
+        if played>0 then return end
+        played=Spy.replay("perk")
         if played>0 then return end
         played=Spy.replay("talent")
         if played>0 then return end
@@ -2220,12 +2459,17 @@ local function buildMenu(sb,ct,gn)
       log("自动药水已启动","info")
       TM.start("AutoPotion",2,function()
         local used=false
-        -- 1. 优先Spy重放
-        local played=Spy.replay("potion")
+        -- 1. 优先RC自动捕获回放(带真实参数)
+        local played=RC.replay("potion")
+        if played>0 then used=true return end
+        played=RC.replay("use")
+        if played>0 then used=true return end
+        -- 2. Spy手动录制回放
+        played=Spy.replay("potion")
         if played>0 then used=true return end
         played=Spy.replay("use")
         if played>0 then used=true return end
-        -- 2. Remote直调
+        -- 3. Remote直调
         if not used then
           local r=findRemoteByType("potion")
           if r then fireRemote(r) used=true end
@@ -2502,7 +2746,7 @@ local function buildMenu(sb,ct,gn)
     end
     notif("已输出 "..c.." 个按钮到日志",C.Blue)
   end)
-  log("YPX v12.5 日志系统就绪","ok")
+  log("YPX v12.6 日志系统就绪","ok")
 end
 
 local TN={universal="通用模式",anime_incremental="Anime Inc."}
@@ -2691,7 +2935,7 @@ tspawn(function()
   log("89R币弹窗拦截器已启动","info")
 
   -- 加载通知
-  local nt=ok and ("✅ "..(TN[gT] or "通用").."  v12.5") or "⚠️ 维护模式"
+  local nt=ok and ("✅ "..(TN[gT] or "通用").."  v12.6") or "⚠️ 维护模式"
   local nf=mk("TextLabel",{
     Parent=sg,BackgroundColor3=ok and C.BlueD or C.Orange,BorderSizePixel=0,
     Position=UDim2.new(0.5,-130,0,-40),Size=UDim2.new(0,260,0,34),
@@ -2706,13 +2950,14 @@ tspawn(function()
   end)
 
   print("═══════════════════════════════════")
-  print("  ✅ YPX v12.5 已加载!")
+  print("  ✅ YPX v12.6 已加载!")
   print("  游戏类型: "..(TN[gT] or "通用"))
   print("  游戏名称: "..tostring(gN))
   print("  PlaceId: "..tostring(pId))
   local rc2=0 for _ in pairs(remoteCache) do rc2=rc2+1 end
   print("  缓存: "..rc2.." Remote")
-  print("  引擎: RemoteSpy Hook | 远程调用 | ESP | 反挂机 | 性能监控 | 飞行 | 穿墙 | 日志 | 符文吸取 | 89R拦截")
+  print("  RC自动捕获: "..RC.count().." 个调用 | Hook模式: "..RC.hookMode)
+  print("  引擎: RemoteCapture(自动捕获参数) | RC回放 | ESP | 反挂机 | 性能监控 | 飞行 | 穿墙 | 日志 | 符文吸取 | 89R拦截")
   print("  按 RightShift 或悬浮按钮 显示/隐藏")
   print("  日志在「日志」标签页查看")
   print("═══════════════════════════════════")
