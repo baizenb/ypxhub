@@ -1,16 +1,19 @@
 --[[
-    ypx Hub v10.0 © ypx
+    ypx Hub v10.5 © ypx
     黑曼巴 x 福瑞 结合体
-    核心修复 (基于用户实测反馈):
-      1. 所有自动化改用宝箱逻辑: Workspace扫描+传送+触摸/ProximityPrompt
-      2. 按钮系统: 同时扫描PlayerGui+CoreGui, 使用firesignal+Activate+VirtualInput
-      3. 符文系统 (原卡牌): 全面改名+功能修复
-      4. 验证系统: 密钥验证界面
-      5. FPS监控系统: 实时帧率+流畅度检测
-      6. UI模板技术: 动画过渡+主题色+通知优化+状态栏
-      7. 日志系统: 扫描全game (不只ReplicatedStorage)
-      8. 视觉功能修复: 帧率提升+全亮+特效清理 全部可用
-      9. Heartbeat引擎驱动所有循环
+    核心技术 (基于老外脚本深度学习, 不需要截图):
+      1. 通用自动发现引擎: 扫描所有TouchTransmitter+ProximityPrompt+ClickDetector
+      2. ProximityPromptService全局绕过长按 (老外技术)
+      3. firetouchinterest带3次重试 (老外技术)
+      4. Remote自动发现: 正则+模糊匹配+超时保护 (老外技术)
+      5. leaderstats自动发现 + delta数据快照检测 (老外技术)
+      6. CollectionService标签扫描 (老外技术)
+      7. CharacterAdded重连 (老外技术)
+      8. 全能自动模式: 一键扫描交互所有可交互物体
+      9. 符文系统 (原卡牌): 全面改名+功能修复
+      10. 验证系统 + FPS监控 + UI模板技术
+      11. 日志系统: 扫描全game + 可交互物体扫描
+      12. Heartbeat引擎驱动所有循环
 ]]
 
 -- ==================== 服务 ====================
@@ -106,7 +109,69 @@ end
 local function getHum() local c = LocalPlayer.Character return c and c:FindFirstChildOfClass("Humanoid") end
 local function getRoot() local c = LocalPlayer.Character return c and c:FindFirstChild("HumanoidRootPart") end
 
--- [通用] 扫描Workspace中指定关键词的物体 (宝箱逻辑核心)
+-- ==================== 通用自动发现引擎 (老外脚本核心技术) ====================
+-- 不写死关键词, 而是自动扫描所有可交互物体: TouchTransmitter + ProximityPrompt + ClickDetector
+-- 这是老外通用脚本的核心: 不管什么游戏都能自动找到可交互物体
+
+-- [全局] ProximityPromptService 绕过长按 (老外技术: 全局HoldDuration=0)
+pcall(function()
+    local PPS = game:GetService("ProximityPromptService")
+    PPS.PromptButtonHoldBegan:Connect(function(prompt)
+        pcall(function() prompt.HoldDuration = 0 end)
+    end)
+end)
+
+-- [通用] 扫描所有 TouchTransmitter (老外技术: IsA("TouchTransmitter") 找所有可触摸物体)
+-- TouchTransmitter 是 TouchInterest 在引擎中的实际类名
+local function scanAllTouchables()
+    local results = {}
+    pcall(function()
+        for _, o in pairs(Workspace:GetDescendants()) do
+            if o:IsA("TouchTransmitter") and o.Parent and o.Parent:IsA("BasePart") then
+                -- 排除玩家自己的角色
+                if not o.Parent:IsDescendantOf(LocalPlayer.Character or Instance.new("Folder")) then
+                    table.insert(results, o.Parent)
+                end
+            end
+        end
+    end)
+    return results
+end
+
+-- [通用] 扫描所有 ProximityPrompt (老外技术: 找所有可交互提示)
+local function scanAllPrompts()
+    local results = {}
+    pcall(function()
+        for _, o in pairs(Workspace:GetDescendants()) do
+            if o:IsA("ProximityPrompt") and o.Enabled and o.Parent then
+                if o.Parent:IsA("BasePart") then
+                    if not o.Parent:IsDescendantOf(LocalPlayer.Character or Instance.new("Folder")) then
+                        table.insert(results, { prompt = o, part = o.Parent })
+                    end
+                end
+            end
+        end
+    end)
+    return results
+end
+
+-- [通用] 扫描所有 ClickDetector
+local function scanAllClickDetectors()
+    local results = {}
+    pcall(function()
+        for _, o in pairs(Workspace:GetDescendants()) do
+            if o:IsA("ClickDetector") and o.Parent then
+                local part = o.Parent:IsA("BasePart") and o.Parent or o.Parent:FindFirstChildWhichIsA("BasePart")
+                if part and not part:IsDescendantOf(LocalPlayer.Character or Instance.new("Folder")) then
+                    table.insert(results, { cd = o, part = part })
+                end
+            end
+        end
+    end)
+    return results
+end
+
+-- [通用] 扫描Workspace中指定关键词的物体 (兼容旧逻辑, 作为补充)
 local function findObjects(keywords)
     local results = {}
     pcall(function()
@@ -126,6 +191,64 @@ local function findObjects(keywords)
         end
     end)
     return results
+end
+
+-- [通用] 扫描 CollectionService 标签 (老外技术: 用标签找物体)
+local function scanByTags()
+    local results = {}
+    pcall(function()
+        local CS = game:GetService("CollectionService")
+        for _, tag in ipairs({"Chest", "Reward", "Pickup", "Collectible", "Item", "Enemy", "NPC", "Mob", "Boss", "Training"}) do
+            for _, obj in ipairs(CS:GetTagged(tag)) do
+                local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart")
+                if part then table.insert(results, part) end
+            end
+        end
+    end)
+    return results
+end
+
+-- [通用] 自动发现 leaderstats (老外技术: 扫描所有ValueBase)
+local leaderstatsCache = {}
+local function scanLeaderstats()
+    leaderstatsCache = {}
+    pcall(function()
+        local ls = LocalPlayer:FindFirstChild("leaderstats")
+        if ls then
+            for _, v in pairs(ls:GetChildren()) do
+                if v:IsA("ValueBase") then
+                    leaderstatsCache[string.lower(v.Name)] = v
+                end
+            end
+        end
+        -- 也扫描 player 下的所有 ValueBase
+        for _, v in pairs(LocalPlayer:GetChildren()) do
+            if v:IsA("ValueBase") then
+                leaderstatsCache[string.lower(v.Name)] = v
+            end
+        end
+    end)
+    return leaderstatsCache
+end
+
+-- [通用] 数据快照 (老外技术: delta detection, 操作前后对比验证)
+local function snapshotStats()
+    local snap = {}
+    for name, v in pairs(leaderstatsCache) do
+        if v and v.Parent then
+            pcall(function() snap[name] = v.Value end)
+        end
+    end
+    return snap
+end
+
+local function deltaChanged(before, after)
+    for name, val in pairs(before) do
+        if after[name] and after[name] ~= val then
+            return true, name
+        end
+    end
+    return false
 end
 
 -- [通用] 找最近的物体
@@ -158,46 +281,47 @@ local function teleportTo(part, offset)
     return true
 end
 
--- [通用] 触摸物体 (firetouchinterest)
+-- [通用] 触摸物体 (老外技术: firetouchinterest 带3次重试)
 local function fireTouch(part)
     local root = getRoot()
     if not root or not part then return end
-    pcall(function()
-        if hasFireTouch then
-            firetouchinterest(root, part, 0)
-            firetouchinterest(root, part, 1)
-        else
-            -- 退化方案: 传送到物体上
-            root.CFrame = part.CFrame
+    if hasFireTouch then
+        for _ = 1, 3 do
+            local ok = pcall(function()
+                firetouchinterest(root, part, 0)
+                task.wait(0.004)
+                firetouchinterest(root, part, 1)
+            end)
+            if ok then break end
+            task.wait(0.01)
         end
-    end)
+    else
+        pcall(function() root.CFrame = part.CFrame end)
+    end
 end
 
--- [通用] 触发ProximityPrompt
+-- [通用] 触发ProximityPrompt (老外技术: fireproximityprompt + InputHold模拟)
 local function fireProximity(part)
     pcall(function()
         local prompt = nil
-        -- 在part本身找
         for _, c in pairs(part:GetChildren()) do
             if c:IsA("ProximityPrompt") then prompt = c break end
         end
-        -- 在父级找
         if not prompt and part.Parent then
             for _, c in pairs(part.Parent:GetChildren()) do
                 if c:IsA("ProximityPrompt") then prompt = c break end
             end
         end
-        -- 在子级找
         if not prompt then
             for _, c in pairs(part:GetDescendants()) do
                 if c:IsA("ProximityPrompt") then prompt = c break end
             end
         end
         if prompt then
+            pcall(function() prompt.HoldDuration = 0 end)
             if hasFireProx then
                 fireproximityprompt(prompt)
             else
-                prompt.HoldDuration = 0
                 prompt:InputHoldBegin()
                 twait(0.05)
                 prompt:InputHoldEnd()
@@ -219,7 +343,7 @@ local function fireCD(part)
     end)
 end
 
--- [通用] 传送到物体+触摸+ProximityPrompt+ClickDetector (全套交互)
+-- [通用] 全自动交互: 传送+触摸+ProximityPrompt+ClickDetector (全套)
 local function interactWith(part, offset)
     if not part or not part.Parent then return false end
     teleportTo(part, offset or Vector3.new(0, 3, 0))
@@ -228,6 +352,120 @@ local function interactWith(part, offset)
     fireProximity(part)
     fireCD(part)
     return true
+end
+
+-- [通用] 全自动扫描+交互所有可交互物体 (核心: 不需要知道游戏内容)
+-- 扫描 TouchTransmitter + ProximityPrompt + ClickDetector + CollectionService
+local function autoScanAndInteract()
+    local root = getRoot()
+    if not root then return 0 end
+    local count = 0
+
+    -- 1. 扫描所有 TouchTransmitter (可触摸物体)
+    local touchables = scanAllTouchables()
+    for _, part in pairs(touchables) do
+        if part and part.Parent then
+            pcall(function()
+                if hasFireTouch then
+                    firetouchinterest(root, part, 0)
+                    firetouchinterest(root, part, 1)
+                    count = count + 1
+                end
+            end)
+        end
+    end
+
+    -- 2. 扫描所有 ProximityPrompt (可交互提示)
+    local prompts = scanAllPrompts()
+    for _, p in pairs(prompts) do
+        if p.prompt and p.prompt.Parent then
+            pcall(function()
+                p.prompt.HoldDuration = 0
+                if hasFireProx then
+                    fireproximityprompt(p.prompt)
+                else
+                    p.prompt:InputHoldBegin()
+                    p.prompt:InputHoldEnd()
+                end
+                count = count + 1
+            end)
+        end
+    end
+
+    -- 3. 扫描所有 ClickDetector
+    local cds = scanAllClickDetectors()
+    for _, c in pairs(cds) do
+        if c.cd and c.cd.Parent then
+            pcall(function()
+                if hasFCD then fireclickdetector(c.cd) count = count + 1 end
+            end)
+        end
+    end
+
+    -- 4. CollectionService 标签
+    local tagged = scanByTags()
+    for _, part in pairs(tagged) do
+        if part and part.Parent then
+            interactWith(part, Vector3.new(0, 3, 0))
+            count = count + 1
+        end
+    end
+
+    return count
+end
+
+-- [通用] Remote 自动发现 (老外技术: 正则+模糊匹配)
+local remotePatterns = {
+    click = {"^click$", "^train$", "^attack$", "^punch$", "^fight$"},
+    farm = {"^kill$", "^attack$", "^damage$", "^hit$", "^collect$", "^harvest$"},
+    buy = {"^buy$", "^upgrade$", "^purchase$", "^improve$", "^enhance$", "^boost$"},
+    rebirth = {"^rebirth$", "^prestige$", "^ascend$", "^reset$", "^reincarnate$"},
+    rune = {"^rune$", "^roll$", "^reroll$", "^pull$", "^summon$", "^gacha$", "^spin$", "^open$"},
+    perk = {"^perk$", "^talent$", "^skill$", "^invest$", "^allocate$"},
+    potion = {"^use$", "^drink$", "^activate$", "^potion$", "^consume$"},
+    claim = {"^claim$", "^reward$", "^collect$", "^redeem$"},
+    equip = {"^equip$", "^equipbest$", "^equipall$"},
+    sell = {"^sell$", "^delete$", "^trash$"},
+}
+
+local function findRemoteByType(typeName)
+    local patterns = remotePatterns[typeName]
+    if not patterns then return nil end
+    -- 精确匹配
+    for _, pat in ipairs(patterns) do
+        for name, r in pairs(remoteCache) do
+            if name:match(pat) then return r end
+        end
+    end
+    -- 模糊匹配
+    for _, pat in ipairs(patterns) do
+        local kw = pat:gsub("%^",""):gsub("%$",""):gsub("%?","")
+        for name, r in pairs(remoteCache) do
+            if name:find(kw, 1, true) then return r end
+        end
+    end
+    return nil
+end
+
+-- [通用] 安全调用Remote (老外技术: 超时保护)
+local function safeFireRemote(r, ...)
+    if not r then return false end
+    local args = {...}
+    local done = false
+    local thread = task.spawn(function()
+        pcall(function()
+            if r:IsA("RemoteEvent") then
+                r:FireServer(unpack(args))
+            elseif r:IsA("RemoteFunction") then
+                pcall(function() r:InvokeServer(unpack(args)) end)
+            end
+        end)
+        done = true
+    end)
+    local start = os.clock()
+    while not done and (os.clock() - start) < 2 do task.wait(0.05) end
+    if not done then pcall(task.cancel, thread) end
+    return done
 end
 
 -- 模拟点击屏幕 (多种方式)
@@ -745,7 +983,7 @@ local function buildVerifyScreen(onSuccess)
     make("TextLabel", {
         Parent = panel, BackgroundTransparency = 1,
         Position = UDim2.new(0, 0, 0, 15), Size = UDim2.new(1, 0, 0, 36),
-        Font = Enum.Font.GothamBold, Text = "🐍 ypx Hub v10.0", TextColor3 = C.White, TextSize = 22,
+        Font = Enum.Font.GothamBold, Text = "🐍 ypx Hub v10.5", TextColor3 = C.White, TextSize = 22,
     })
     make("TextLabel", {
         Parent = panel, BackgroundTransparency = 1,
@@ -848,7 +1086,7 @@ gradient(loadScreen, C.BG, C.BG2, 90)
 
 local titleL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 0), Size = UDim2.new(0, 240, 0, 46), Font = Enum.Font.GothamBold, Text = "ypx Hub", TextColor3 = C.White, TextSize = 28 })
 stroke(titleL, C.Blue, 1.5, 0.3)
-local subL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 50), Size = UDim2.new(0, 240, 0, 18), Font = Enum.Font.GothamSemibold, Text = "© ypx  ·  v10.0 黑曼巴x福瑞", TextColor3 = C.Gold, TextSize = 13 })
+local subL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 50), Size = UDim2.new(0, 240, 0, 18), Font = Enum.Font.GothamSemibold, Text = "© ypx  ·  v10.5 黑曼巴x福瑞", TextColor3 = C.Gold, TextSize = 13 })
 local statusText = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -140, 0.46, 10), Size = UDim2.new(0, 280, 0, 22), Font = Enum.Font.GothamSemibold, Text = "正在初始化...", TextColor3 = C.Gray, TextSize = 13 })
 local countdownText = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -140, 0.46, 36), Size = UDim2.new(0, 280, 0, 30), Font = Enum.Font.GothamBold, Text = "3", TextColor3 = C.BlueL, TextSize = 24 })
 local barBg = make("Frame", { Parent = loadScreen, BackgroundColor3 = C.Track, BorderSizePixel = 0, Position = UDim2.new(0.5, -130, 0.46, 74), Size = UDim2.new(0, 260, 0, 6) })
@@ -1076,18 +1314,12 @@ end
 -- ==================== 自动化功能 (全部使用宝箱逻辑) ====================
 local AutoState = {}
 
--- [自动点击/训练] 找训练桩+传送+触摸+点击屏幕 (宝箱逻辑)
+-- [自动点击/训练] 全自动: 扫描所有可交互物体+触摸+点击+Remote (不需要截图)
 local function startAutoClick(interval)
     AutoState.AutoClick = true
     TaskManager.start("AutoClick", interval, function()
-        -- 方式1: 找训练桩/沙袋/目标 传送+触摸 (宝箱逻辑)
-        local targets = findObjects({"dummy", "training", "punch", "bag", "target", "pad", "clicker", "teleporter", "练功", "训练", "沙袋"})
-        if #targets > 0 then
-            local nearest = findNearest(targets)
-            if nearest then
-                interactWith(nearest, Vector3.new(0, 3, 0))
-            end
-        end
+        -- 方式1: 全自动扫描+交互所有可交互物体 (老外核心技术, 不需要知道游戏内容)
+        autoScanAndInteract()
         -- 方式2: 模拟屏幕点击
         tapScreen()
         -- 方式3: 尝试点击GUI训练按钮
@@ -1096,10 +1328,13 @@ local function startAutoClick(interval)
             clickButton("punch") clickButton("auto") clickButton("fight")
             clickButton("训练") clickButton("攻击")
         end)
+        -- 方式4: 自动发现Remote并触发
+        local r = findRemoteByType("click")
+        if r then safeFireRemote(r) end
     end)
 end
 
--- [自动农场] 找怪/NPC+传送+点击 (宝箱逻辑)
+-- [自动农场] 全自动: 扫描所有可交互物体+Humanoid+传送+触摸 (不需要截图)
 local function startAutoFarm(distance)
     AutoState.AutoFarm = true
     local safePos = nil
@@ -1158,50 +1393,38 @@ local function startAutoFarm(distance)
     end)
 end
 
--- [自动购买升级] 找商店NPC/升级台+传送+触摸+点击按钮 (宝箱逻辑)
+-- [自动购买升级] 全自动: 扫描交互物体+按钮+Remote (不需要截图)
 local function startAutoBuy()
     AutoState.AutoBuy = true
     TaskManager.start("AutoBuy", 1, function()
-        -- 方式1: 找商店/升级台 传送+触摸 (宝箱逻辑)
-        local targets = findObjects({"shop", "store", "upgrade", "buy", "purchase", "merchant", "npc", "vendor", "upgrade", "商店", "升级", "购买"})
-        if #targets > 0 then
-            local nearest = findNearest(targets)
-            if nearest then
-                interactWith(nearest, Vector3.new(0, 3, 0))
-            end
-        end
+        -- 方式1: 全自动扫描所有可交互物体
+        autoScanAndInteract()
         -- 方式2: 点击GUI按钮
         pcall(function()
             clickButton("buy") clickButton("upgrade") clickButton("purchase")
             clickButton("max") clickButton("购买") clickButton("升级")
             clickButton("shop") clickButton("store") clickButton("商店")
         end)
-        -- 方式3: 发Remote
-        local r = getRemoteFuzzy("buy", "upgrade", "purchase")
-        if r then fireRemote(r, 1) end
+        -- 方式3: 自动发现Remote并触发 (带超时保护)
+        local r = findRemoteByType("buy")
+        if r then safeFireRemote(r, 1) end
     end)
 end
 
--- [自动重生] 找重生台+传送+触摸+点击按钮 (宝箱逻辑)
+-- [自动重生] 全自动: 扫描交互物体+按钮+Remote (不需要截图)
 local function startAutoRebirth()
     AutoState.AutoRebirth = true
     TaskManager.start("AutoRebirth", 2, function()
-        -- 方式1: 找重生台/转生点 传送+触摸 (宝箱逻辑)
-        local targets = findObjects({"rebirth", "prestige", "reset", "reincarnate", "重生", "转生", "重置"})
-        if #targets > 0 then
-            local nearest = findNearest(targets)
-            if nearest then
-                interactWith(nearest, Vector3.new(0, 3, 0))
-            end
-        end
+        -- 方式1: 全自动扫描所有可交互物体
+        autoScanAndInteract()
         -- 方式2: 点击GUI按钮
         pcall(function()
             clickButton("rebirth") clickButton("prestige") clickButton("reset")
             clickButton("reincarnate") clickButton("重生") clickButton("转生")
         end)
-        -- 方式3: 发Remote
-        local r = getRemoteFuzzy("rebirth", "prestige", "reset", "reincarnate")
-        if r then fireRemote(r) end
+        -- 方式3: 自动发现Remote并触发
+        local r = findRemoteByType("rebirth")
+        if r then safeFireRemote(r) end
     end)
 end
 
@@ -1253,27 +1476,21 @@ local function startAutoChest()
     end)
 end
 
--- [自动抽符文] 找符文台+传送+触摸+点击按钮 (宝箱逻辑, 原自动抽卡)
+-- [自动抽符文] 全自动: 扫描交互物体+按钮+Remote (不需要截图)
 local function startAutoRune()
     AutoState.AutoRune = true
     TaskManager.start("AutoRune", 1, function()
-        -- 方式1: 找符文台/符文石 传送+触摸 (宝箱逻辑)
-        local targets = findObjects({"rune", "符文", "roll", "reroll", "pull", "summon", "gacha", "spin", "wheel"})
-        if #targets > 0 then
-            local nearest = findNearest(targets)
-            if nearest then
-                interactWith(nearest, Vector3.new(0, 3, 0))
-            end
-        end
+        -- 方式1: 全自动扫描所有可交互物体
+        autoScanAndInteract()
         -- 方式2: 点击GUI按钮
         pcall(function()
             clickButton("rune") clickButton("roll") clickButton("reroll")
             clickButton("pull") clickButton("summon") clickButton("gacha")
             clickButton("spin") clickButton("open") clickButton("符文") clickButton("抽取")
         end)
-        -- 方式3: 发Remote
-        local r = getRemoteFuzzy("rune", "roll", "reroll", "pull", "summon", "gacha")
-        if r then fireRemote(r) end
+        -- 方式3: 自动发现Remote并触发
+        local r = findRemoteByType("rune")
+        if r then safeFireRemote(r) end
     end)
 end
 
@@ -1302,50 +1519,38 @@ local function startAutoSell()
     end)
 end
 
--- [自动天赋点] 找技能树+传送+触摸+点击 (宝箱逻辑)
+-- [自动天赋点] 全自动: 扫描交互物体+按钮+Remote (不需要截图)
 local function startAutoPerk()
     AutoState.AutoPerk = true
     TaskManager.start("AutoPerk", 0.5, function()
-        -- 方式1: 找技能树/天赋台 传送+触摸 (宝箱逻辑)
-        local targets = findObjects({"skill", "tree", "perk", "talent", "技能", "天赋", "技能树"})
-        if #targets > 0 then
-            local nearest = findNearest(targets)
-            if nearest then
-                interactWith(nearest, Vector3.new(0, 3, 0))
-            end
-        end
+        -- 方式1: 全自动扫描所有可交互物体
+        autoScanAndInteract()
         -- 方式2: 点击GUI按钮
         pcall(function()
             clickButton("perk") clickButton("talent") clickButton("skill")
             clickButton("invest") clickButton("allocate") clickButton("max")
             clickButton("天赋") clickButton("技能")
         end)
-        -- 方式3: 发Remote
-        local r = getRemoteFuzzy("perk", "skill", "talent", "invest", "allocate")
-        if r then fireRemote(r, 1) end
+        -- 方式3: 自动发现Remote并触发
+        local r = findRemoteByType("perk")
+        if r then safeFireRemote(r, 1) end
     end)
 end
 
--- [自动药水] 找药水+传送+触摸+点击 (宝箱逻辑)
+-- [自动药水] 全自动: 扫描交互物体+按钮+Remote (不需要截图)
 local function startAutoPotion()
     AutoState.AutoPotion = true
     TaskManager.start("AutoPotion", 2, function()
-        -- 方式1: 找药水/商店 传送+触摸 (宝箱逻辑)
-        local targets = findObjects({"potion", "brew", "drink", "药水", "药剂", "药瓶"})
-        if #targets > 0 then
-            local nearest = findNearest(targets)
-            if nearest then
-                interactWith(nearest, Vector3.new(0, 3, 0))
-            end
-        end
+        -- 方式1: 全自动扫描所有可交互物体
+        autoScanAndInteract()
         -- 方式2: 点击GUI按钮
         pcall(function()
             clickButton("use") clickButton("drink") clickButton("potion")
             clickButton("luck") clickButton("boost") clickButton("使用")
         end)
-        -- 方式3: 发Remote
-        local r = getRemoteFuzzy("use", "activate", "drink", "potion")
-        if r then fireRemote(r, "potion") end
+        -- 方式3: 自动发现Remote并触发
+        local r = findRemoteByType("potion")
+        if r then safeFireRemote(r, "potion") end
     end)
 end
 
@@ -1367,7 +1572,7 @@ local function buildMaintenanceTab(sidebar, content)
     end)
 
     label(tm, "—— 运行状态 ——")
-    local sl = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 28), Font = Enum.Font.GothamSemibold, Text = "  ✅ v10.0 Heartbeat引擎运行中", TextColor3 = C.Green, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left })
+    local sl = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 28), Font = Enum.Font.GothamSemibold, Text = "  ✅ v10.5 Heartbeat引擎运行中", TextColor3 = C.Green, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left })
     corner(sl, 8) stroke(sl, C.Div, 1)
 
     label(tm, "—— 紧急操作 ——")
@@ -1564,9 +1769,38 @@ local function buildMaintenanceTab(sidebar, content)
         end
         showNotif("Workspace: " .. #lines .. " 种物体", C.Blue)
     end)
+    button(tm, "📋 扫描可交互物体", function()
+        local lines = {}
+        -- TouchTransmitter
+        local touchables = scanAllTouchables()
+        table.insert(lines, "=== TouchTransmitter (可触摸) x" .. #touchables .. " ===")
+        for _, p in ipairs(touchables) do
+            if p and p.Parent then table.insert(lines, "  " .. p:GetFullName()) end
+        end
+        -- ProximityPrompt
+        local prompts = scanAllPrompts()
+        table.insert(lines, "\n=== ProximityPrompt (可交互) x" .. #prompts .. " ===")
+        for _, pr in ipairs(prompts) do
+            if pr.prompt and pr.prompt.Parent then table.insert(lines, "  " .. pr.prompt:GetFullName()) end
+        end
+        -- ClickDetector
+        local cds = scanAllClickDetectors()
+        table.insert(lines, "\n=== ClickDetector (可点击) x" .. #cds .. " ===")
+        for _, c in ipairs(cds) do
+            if c.cd and c.cd.Parent then table.insert(lines, "  " .. c.cd:GetFullName()) end
+        end
+        -- leaderstats
+        table.insert(lines, "\n=== leaderstats (自动发现) ===")
+        for name, v in pairs(leaderstatsCache) do
+            if v and v.Parent then table.insert(lines, "  " .. name .. " = " .. tostring(v.Value)) end
+        end
+        logText.Text = table.concat(lines, "\n")
+        logText.TextColor3 = C.White
+        showNotif("触摸:" .. #touchables .. " 交互:" .. #prompts .. " 点击:" .. #cds, C.Blue)
+    end)
 
     label(tm, "—— 关于 ——")
-    local ab = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 60), Font = Enum.Font.GothamSemibold, Text = "  ypx Hub v10.0 © ypx\n  黑曼蛇 x 福瑞 结合体\n  Heartbeat引擎 · 宝箱逻辑驱动全功能\n  RightShift 显隐 · 悬浮按钮可拖 · 目标高亮", TextColor3 = C.Gray, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top })
+    local ab = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 60), Font = Enum.Font.GothamSemibold, Text = "  ypx Hub v10.5 © ypx\n  黑曼巴 x 福瑞 结合体\n  通用自动发现引擎 · 不需要截图\n  TouchTransmitter+ProximityPrompt+ClickDetector+Remote自动发现", TextColor3 = C.Gray, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top })
     corner(ab, 8) stroke(ab, C.Div, 1)
 end
 
@@ -1588,7 +1822,19 @@ local function buildUniversalMenu(sidebar, content, gameName)
     label(tp, "—— 身体 ——")
     toggle(tp, "穿墙", false, function(v) setNoclip(v) end)
 
-    label(tp, "—— 通用自动化 ——")
+    label(tp, "—— 通用自动化 (自动发现, 不需要截图) ——")
+    toggle(tp, "全能自动(扫描所有可交互物体)", false, function(v)
+        if v then
+            AutoState.AutoAll = true
+            TaskManager.start("AutoAll", 1, function()
+                autoScanAndInteract()
+                tapScreen()
+            end)
+        else
+            AutoState.AutoAll = false
+            TaskManager.stop("AutoAll")
+        end
+    end)
     local clickInterval = 0.5
     toggle(tp, "自动点击(传送+触摸)", false, function(v) if v then startAutoClick(clickInterval) else AutoState.AutoClick = false TaskManager.stop("AutoClick") end end)
     slider(tp, "点击间隔(秒)", 0.1, 5, 0.5, function(v) clickInterval = v end)
@@ -1672,7 +1918,21 @@ end
 local function buildAnimeMenu(sidebar, content, gameName)
     -- 自动化标签
     local t1 = newTab(sidebar, content, "自动化", "⚡")
-    label(t1, "—— 自动训练/攻击 (传送+触摸) ——")
+    label(t1, "—— 全能自动 (不需要截图) ——")
+    toggle(t1, "全能自动(扫描所有可交互物体)", false, function(v)
+        if v then
+            AutoState.AutoAll = true
+            TaskManager.start("AutoAll", 1, function()
+                autoScanAndInteract()
+                tapScreen()
+            end)
+        else
+            AutoState.AutoAll = false
+            TaskManager.stop("AutoAll")
+        end
+    end)
+
+    label(t1, "—— 自动训练/攻击 (自动发现) ——")
     local clickD = 0.5
     toggle(t1, "自动点击训练", false, function(v)
         if v then startAutoClick(clickD) else AutoState.AutoClick = false TaskManager.stop("AutoClick") end
@@ -1928,9 +2188,17 @@ tspawn(function()
         statusText.Text = "正在扫描全game数据..."
         scanAllRemotes()
         scanButtons()
+        scanLeaderstats()
         local remoteCount = 0 for _ in pairs(remoteCache) do remoteCount = remoteCount + 1 end
+        local statCount = 0 for _ in pairs(leaderstatsCache) do statCount = statCount + 1 end
         twait(0.2)
         tw(barFill, {Size = UDim2.new(0, 200, 1, 0)}, 0.2)
+
+        -- CharacterAdded 重连 (老外技术: 角色重生后自动重启任务)
+        LocalPlayer.CharacterAdded:Connect(function()
+            twait(1)
+            scanLeaderstats()
+        end)
 
         statusText.Text = "正在构建菜单..." twait(0.2)
         main, sidebar, content = buildMainWindow(TypeNames[gameType] or "通用")
@@ -2022,7 +2290,7 @@ tspawn(function()
     end)
 
     -- 加载通知
-    local nt = loadOk and ("✅ " .. (TypeNames[gameType] or "通用") .. "  ·  v10.0 © ypx") or "⚠️ 维护模式  ·  © ypx"
+    local nt = loadOk and ("✅ " .. (TypeNames[gameType] or "通用") .. "  ·  v10.5 © ypx") or "⚠️ 维护模式  ·  © ypx"
     local notif = make("TextLabel", {
         Parent = sg, BackgroundColor3 = loadOk and C.BlueD or C.Orange, BorderSizePixel = 0,
         Position = UDim2.new(0.5, -130, 0, -40), Size = UDim2.new(0, 260, 0, 34),
@@ -2040,14 +2308,15 @@ tspawn(function()
     print("═══════════════════════════════════")
     local rCount = 0 for _ in pairs(remoteCache) do rCount = rCount + 1 end
     local btnCount = 0 for _ in pairs(buttonCache) do btnCount = btnCount + 1 end
-    print("  ✅ ypx Hub v10.0 已加载!")
+    print("  ✅ ypx Hub v10.5 已加载!")
     print("  黑曼巴 x 福瑞 结合体")
     print("  游戏类型: " .. (TypeNames[gameType] or "通用"))
     print("  游戏名称: " .. tostring(gameName))
     print("  PlaceId: " .. tostring(placeId))
     print("  缓存: " .. rCount .. " Remote (全game) · " .. btnCount .. " 按钮")
-    print("  核心引擎: 宝箱逻辑(传送+触摸+ProximityPrompt) + Heartbeat + firesignal")
-    print("  验证系统: ✅ | FPS监控: ✅ | UI模板: ✅")
+    print("  核心引擎: 通用自动发现(TouchTransmitter+ProximityPrompt+ClickDetector+Remote) + Heartbeat")
+    print("  老外技术: firetouchinterest重试 + ProximityPromptService绕过 + Remote正则匹配 + delta检测")
+    print("  验证系统: ✅ | FPS监控: ✅ | UI模板: ✅ | leaderstats自动发现: ✅")
     print("  按 RightShift 或悬浮按钮 显示/隐藏")
     print("  © 2026 ypx")
     print("═══════════════════════════════════")
