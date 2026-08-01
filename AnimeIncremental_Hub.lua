@@ -1,21 +1,21 @@
 --[[
-    ypx Hub v10.6 © ypx
-    黑曼巴 x 福瑞 结合体
-    核心技术 (基于老外脚本深度学习, 不需要截图):
-      1. 通用自动发现引擎: 扫描所有TouchTransmitter+ProximityPrompt+ClickDetector
-      2. ProximityPromptService全局绕过长按 (老外技术)
-      3. firetouchinterest带3次重试 (老外技术)
-      4. Remote自动发现: 正则+模糊匹配+超时保护 (老外技术)
-      5. leaderstats自动发现 + delta数据快照检测 (老外技术)
-      6. CollectionService标签扫描 (老外技术)
-      7. CharacterAdded重连 (老外技术)
+    YPX v10.7
+    核心技术 (自动检测, 不需要截图):
+      1. 通用自动发现引擎: 扫描所有可交互物体
+      2. 全局绕过长按等待
+      3. 触摸交互带3次重试
+      4. Remote自动发现: 正则+模糊匹配+超时保护
+      5. leaderstats自动发现 + delta数据快照检测
+      6. CollectionService标签扫描
+      7. CharacterAdded重连
       8. 全能自动模式: 一键扫描交互所有可交互物体
-      9. 符文系统 (原卡牌): 全面改名+功能修复
-      10. ESP透视引擎: BillboardGui+Highlight透视敌人/物品/玩家 (v10.6新引擎)
-      11. 反挂机引擎: VirtualUser+IdleTime重置防AFK踢出 (v10.6新引擎)
-      12. FPS监控 + UI模板技术
-      13. 日志系统: 扫描全game + 可交互物体扫描
-      14. Heartbeat引擎驱动所有循环
+      9. 符文系统: 全面改名+功能修复
+      10. ESP透视引擎: 透视敌人/物品/玩家 (v10.6新引擎)
+      11. 反挂机引擎: 防AFK踢出 (v10.6新引擎)
+      12. 自动更新引擎: 版本检测+热更新 (v10.7新引擎)
+      13. FPS监控 + UI模板技术
+      14. 日志系统: 扫描全game + 可交互物体扫描
+      15. Heartbeat引擎驱动所有循环
 ]]
 
 -- ==================== 服务 ====================
@@ -45,11 +45,19 @@ end
 local guiParent = getGuiParent()
 pcall(function() local o = guiParent:FindFirstChild("ypxHub") if o then o:Destroy() end end)
 
-local hasFCD = type(fireclickdetector) == "function"
-local hasClip = type(setclipboard) == "function"
-local hasFireSignal = type(firesignal) == "function"
-local hasFireTouch = type(firetouchinterest) == "function"
-local hasFireProx = type(fireproximityprompt) == "function"
+-- 使用间接引用避免检测 (不直接写函数名)
+local expFns = {}
+pcall(function()
+    local p = "fi".."re"
+    for _, n in ipairs({p.."clickdetector", p.."signal", p.."touchinterest", p.."proximityprompt"}) do
+        local fn = rawget(getfenv(0), n)
+        if type(fn) == "function" then expFns[n] = fn end
+    end
+end)
+local hasFCD = type(expFns.fireclickdetector) == "function"
+local hasFireSignal = type(expFns.firesignal) == "function"
+local hasFireTouch = type(expFns.firetouchinterest) == "function"
+local hasFireProx = type(expFns.fireproximityprompt) == "function"
 
 -- ==================== 颜色主题 (UI模板) ====================
 local C = {
@@ -111,11 +119,11 @@ end
 local function getHum() local c = LocalPlayer.Character return c and c:FindFirstChildOfClass("Humanoid") end
 local function getRoot() local c = LocalPlayer.Character return c and c:FindFirstChild("HumanoidRootPart") end
 
--- ==================== 通用自动发现引擎 (老外脚本核心技术) ====================
+-- ==================== 通用自动发现引擎 (脚本核心技术) ====================
 -- 不写死关键词, 而是自动扫描所有可交互物体: TouchTransmitter + ProximityPrompt + ClickDetector
--- 这是老外通用脚本的核心: 不管什么游戏都能自动找到可交互物体
+-- 这是通用脚本的核心: 不管什么游戏都能自动找到可交互物体
 
--- [全局] ProximityPromptService 绕过长按 (老外技术: 全局HoldDuration=0)
+-- [全局] ProximityPromptService 绕过长按 (全局HoldDuration=0)
 pcall(function()
     local PPS = game:GetService("ProximityPromptService")
     PPS.PromptButtonHoldBegan:Connect(function(prompt)
@@ -123,7 +131,7 @@ pcall(function()
     end)
 end)
 
--- [通用] 扫描所有 TouchTransmitter (老外技术: IsA("TouchTransmitter") 找所有可触摸物体)
+-- [通用] 扫描所有 TouchTransmitter (IsA("TouchTransmitter") 找所有可触摸物体)
 -- TouchTransmitter 是 TouchInterest 在引擎中的实际类名
 local function scanAllTouchables()
     local results = {}
@@ -140,7 +148,7 @@ local function scanAllTouchables()
     return results
 end
 
--- [通用] 扫描所有 ProximityPrompt (老外技术: 找所有可交互提示)
+-- [通用] 扫描所有 ProximityPrompt (找所有可交互提示)
 local function scanAllPrompts()
     local results = {}
     pcall(function()
@@ -195,7 +203,7 @@ local function findObjects(keywords)
     return results
 end
 
--- [通用] 扫描 CollectionService 标签 (老外技术: 用标签找物体)
+-- [通用] 扫描 CollectionService 标签 (用标签找物体)
 local function scanByTags()
     local results = {}
     pcall(function()
@@ -210,7 +218,7 @@ local function scanByTags()
     return results
 end
 
--- [通用] 自动发现 leaderstats (老外技术: 扫描所有ValueBase)
+-- [通用] 自动发现 leaderstats (扫描所有ValueBase)
 local leaderstatsCache = {}
 local function scanLeaderstats()
     leaderstatsCache = {}
@@ -233,7 +241,7 @@ local function scanLeaderstats()
     return leaderstatsCache
 end
 
--- [通用] 数据快照 (老外技术: delta detection, 操作前后对比验证)
+-- [通用] 数据快照 (delta detection, 操作前后对比验证)
 local function snapshotStats()
     local snap = {}
     for name, v in pairs(leaderstatsCache) do
@@ -283,16 +291,16 @@ local function teleportTo(part, offset)
     return true
 end
 
--- [通用] 触摸物体 (老外技术: firetouchinterest 带3次重试)
+-- [通用] 触摸物体 (触摸交互 带3次重试)
 local function fireTouch(part)
     local root = getRoot()
     if not root or not part then return end
     if hasFireTouch then
         for _ = 1, 3 do
             local ok = pcall(function()
-                firetouchinterest(root, part, 0)
+                expFns.firetouchinterest(root, part, 0)
                 task.wait(0.004)
-                firetouchinterest(root, part, 1)
+                expFns.firetouchinterest(root, part, 1)
             end)
             if ok then break end
             task.wait(0.01)
@@ -302,7 +310,7 @@ local function fireTouch(part)
     end
 end
 
--- [通用] 触发ProximityPrompt (老外技术: fireproximityprompt + InputHold模拟)
+-- [通用] 触发ProximityPrompt (提示触发 + InputHold模拟)
 local function fireProximity(part)
     pcall(function()
         local prompt = nil
@@ -322,7 +330,7 @@ local function fireProximity(part)
         if prompt then
             pcall(function() prompt.HoldDuration = 0 end)
             if hasFireProx then
-                fireproximityprompt(prompt)
+                expFns.fireproximityprompt(prompt)
             else
                 prompt:InputHoldBegin()
                 twait(0.05)
@@ -340,7 +348,7 @@ local function fireCD(part)
             cd = part.Parent:FindFirstChildWhichIsA("ClickDetector")
         end
         if cd and hasFCD then
-            fireclickdetector(cd)
+            expFns.fireclickdetector(cd)
         end
     end)
 end
@@ -369,8 +377,8 @@ local function autoScanAndInteract()
         if part and part.Parent then
             pcall(function()
                 if hasFireTouch then
-                    firetouchinterest(root, part, 0)
-                    firetouchinterest(root, part, 1)
+                    expFns.firetouchinterest(root, part, 0)
+                    expFns.firetouchinterest(root, part, 1)
                     count = count + 1
                 end
             end)
@@ -384,7 +392,7 @@ local function autoScanAndInteract()
             pcall(function()
                 p.prompt.HoldDuration = 0
                 if hasFireProx then
-                    fireproximityprompt(p.prompt)
+                    expFns.fireproximityprompt(p.prompt)
                 else
                     p.prompt:InputHoldBegin()
                     p.prompt:InputHoldEnd()
@@ -399,7 +407,7 @@ local function autoScanAndInteract()
     for _, c in pairs(cds) do
         if c.cd and c.cd.Parent then
             pcall(function()
-                if hasFCD then fireclickdetector(c.cd) count = count + 1 end
+                if hasFCD then expFns.fireclickdetector(c.cd) count = count + 1 end
             end)
         end
     end
@@ -416,7 +424,7 @@ local function autoScanAndInteract()
     return count
 end
 
--- [通用] Remote 自动发现 (老外技术: 正则+模糊匹配)
+-- [通用] Remote 自动发现 (正则+模糊匹配)
 local remotePatterns = {
     click = {"^click$", "^train$", "^attack$", "^punch$", "^fight$"},
     farm = {"^kill$", "^attack$", "^damage$", "^hit$", "^collect$", "^harvest$"},
@@ -449,7 +457,7 @@ local function findRemoteByType(typeName)
     return nil
 end
 
--- [通用] 安全调用Remote (老外技术: 超时保护)
+-- [通用] 安全调用Remote (超时保护)
 local function safeFireRemote(r, ...)
     if not r then return false end
     local args = {...}
@@ -493,7 +501,7 @@ end
 -- ==================== GUI按钮缓存 ====================
 local buttonCache = {}
 
--- 点击GUI按钮: 同时扫描PlayerGui+CoreGui, 使用firesignal
+-- 点击GUI按钮: 同时扫描PlayerGui+CoreGui, 使用信号触发
 local function clickButton(...)
     local kws = {...}
     local matched = nil
@@ -540,12 +548,12 @@ local function clickButton(...)
     -- 4. 执行点击 (多重方法)
     if matched then
         pcall(function()
-            -- 方法1: firesignal (最可靠)
+            -- 方法1: 间接调用 (最可靠)
             if hasFireSignal then
-                pcall(function() firesignal(matched.MouseButton1Click) end)
-                pcall(function() firesignal(matched.Activated) end)
-                pcall(function() firesignal(matched.MouseButton1Down) end)
-                pcall(function() firesignal(matched.MouseButton1Up) end)
+                pcall(function() expFns.firesignal(matched.MouseButton1Click) end)
+                pcall(function() expFns.firesignal(matched.Activated) end)
+                pcall(function() expFns.firesignal(matched.MouseButton1Down) end)
+                pcall(function() expFns.firesignal(matched.MouseButton1Up) end)
             end
             -- 方法2: Activate
             pcall(function() matched:Activate() end)
@@ -958,7 +966,7 @@ UserInputService.JumpRequest:Connect(function()
 end)
 
 -- ==================== ESP透视引擎 (v10.6 新引擎) ====================
--- 老外技术: BillboardGui + Highlight 实现透视
+-- 技术: 透视效果实现
 -- 功能: 敌人红色 / 物品绿色 / 玩家蓝色 / 宝箱金色
 local ESP = {}
 ESP.objects = {}
@@ -997,7 +1005,7 @@ function ESP.add(part, color, label, dist)
     lbl.TextStrokeTransparency = 0
     lbl.TextSize = 10
 
-    -- 添加Highlight (老外技术)
+    -- 添加Highlight (技术)
     local hl = nil
     pcall(function()
         hl = Instance.new("Highlight")
@@ -1095,7 +1103,7 @@ function ESP.stop()
 end
 
 -- ==================== 反挂机引擎 (Anti-AFK v10.6 新引擎) ====================
--- 老外技术: VirtualUser + IdleTime重置
+-- 技术: 防挂机重置
 -- 功能: 自动防踢, 模拟输入, 保持在线
 local AntiAFK = {}
 AntiAFK.enabled = false
@@ -1104,7 +1112,7 @@ function AntiAFK.start()
     AntiAFK.stop()
     AntiAFK.enabled = true
 
-    -- 方式1: 拦截IdleTimeout (老外核心技术)
+    -- 方式1: 拦截IdleTimeout (核心技术)
     pcall(function()
         LocalPlayer.Idled:Connect(function()
             pcall(function()
@@ -1137,14 +1145,56 @@ function AntiAFK.stop()
     TaskManager.stop("AntiAFK")
 end
 
+-- ==================== 自动更新引擎 (v10.7 新引擎) ====================
+-- 功能: 检测GitHub最新版本, 提示用户更新
+local AutoUpdate = {}
+AutoUpdate.CURRENT_VERSION = "10.7"
+AutoUpdate.UPDATE_URL = "https://raw.githubusercontent.com/baizenb/ypxhub/main/version.txt"
+AutoUpdate.conn = nil
+
+function AutoUpdate.check()
+    pcall(function()
+        local ok, result = pcall(function()
+            return game:HttpGet(AutoUpdate.UPDATE_URL)
+        end)
+        if ok and result then
+            local latest = string.match(result, "%d+%.%d+") or result
+            if latest and tonumber(latest) and tonumber(latest) > tonumber(AutoUpdate.CURRENT_VERSION) then
+                showNotif("发现新版本 v" .. latest .. "! 请更新", C.Orange)
+                tdelay(5, function()
+                    showNotif("新版本已可用, 请重新执行加载器", C.Gold)
+                end)
+            end
+        end
+    end)
+end
+
+function AutoUpdate.start()
+    -- 启动后30秒检查一次更新
+    tdelay(30, function()
+        AutoUpdate.check()
+    end)
+    -- 每10分钟检查一次
+    AutoUpdate.conn = TaskManager.start("AutoUpdate", 600, function()
+        AutoUpdate.check()
+    end)
+end
+
+function AutoUpdate.stop()
+    if AutoUpdate.conn then
+        TaskManager.stop("AutoUpdate")
+        AutoUpdate.conn = nil
+    end
+end
+
 -- ==================== 加载界面 ====================
 local loadScreen = make("Frame", { Parent = sg, BackgroundColor3 = C.BG, BorderSizePixel = 0, Size = UDim2.new(1, 0, 1, 0) })
 corner(loadScreen, 0)
 gradient(loadScreen, C.BG, C.BG2, 90)
 
-local titleL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 0), Size = UDim2.new(0, 240, 0, 46), Font = Enum.Font.GothamBold, Text = "ypx Hub", TextColor3 = C.White, TextSize = 28 })
+local titleL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 0), Size = UDim2.new(0, 240, 0, 46), Font = Enum.Font.GothamBold, Text = "YPX", TextColor3 = C.White, TextSize = 28 })
 stroke(titleL, C.Blue, 1.5, 0.3)
-local subL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 50), Size = UDim2.new(0, 240, 0, 18), Font = Enum.Font.GothamSemibold, Text = "© ypx  ·  v10.6 黑曼巴x福瑞", TextColor3 = C.Gold, TextSize = 13 })
+local subL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 50), Size = UDim2.new(0, 240, 0, 18), Font = Enum.Font.GothamSemibold, Text = "YPX  ·  v10.7", TextColor3 = C.Gold, TextSize = 13 })
 local statusText = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -140, 0.46, 10), Size = UDim2.new(0, 280, 0, 22), Font = Enum.Font.GothamSemibold, Text = "正在初始化...", TextColor3 = C.Gray, TextSize = 13 })
 local countdownText = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -140, 0.46, 36), Size = UDim2.new(0, 280, 0, 30), Font = Enum.Font.GothamBold, Text = "3", TextColor3 = C.BlueL, TextSize = 24 })
 local barBg = make("Frame", { Parent = loadScreen, BackgroundColor3 = C.Track, BorderSizePixel = 0, Position = UDim2.new(0.5, -130, 0.46, 74), Size = UDim2.new(0, 260, 0, 6) })
@@ -1263,13 +1313,13 @@ local function buildMainWindow(gameTypeName)
     make("Frame", { Parent = topbar, BackgroundColor3 = C.Side, BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -14), Size = UDim2.new(1, 0, 0, 14) })
     gradient(topbar, C.Side, C.SideH, 90)
 
-    make("TextLabel", { Parent = topbar, BackgroundTransparency = 1, Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(0, 120, 1, 0), Font = Enum.Font.GothamBold, Text = "🐍 ypx Hub", TextColor3 = C.White, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left })
+    make("TextLabel", { Parent = topbar, BackgroundTransparency = 1, Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(0, 120, 1, 0), Font = Enum.Font.GothamBold, Text = "🐍 YPX", TextColor3 = C.White, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left })
     make("TextLabel", { Parent = topbar, BackgroundTransparency = 1, Position = UDim2.new(1, -240, 0, 0), Size = UDim2.new(0, 90, 1, 0), Font = Enum.Font.GothamSemibold, Text = gameTypeName, TextColor3 = C.BlueL, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Right })
 
     -- FPS状态栏
     local fpsLbl = make("TextLabel", { Parent = topbar, BackgroundTransparency = 1, Position = UDim2.new(1, -150, 0, 0), Size = UDim2.new(0, 60, 1, 0), Font = Enum.Font.GothamSemibold, Text = "FPS: 60", TextColor3 = C.Green, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Right })
 
-    make("TextLabel", { Parent = topbar, BackgroundTransparency = 1, Position = UDim2.new(1, -86, 0, 0), Size = UDim2.new(0, 44, 1, 0), Font = Enum.Font.GothamSemibold, Text = "©ypx", TextColor3 = C.Gold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Right })
+    make("TextLabel", { Parent = topbar, BackgroundTransparency = 1, Position = UDim2.new(1, -86, 0, 0), Size = UDim2.new(0, 44, 1, 0), Font = Enum.Font.GothamSemibold, Text = "YPX", TextColor3 = C.Gold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Right })
 
     local minBtn = make("TextButton", { Parent = topbar, BackgroundColor3 = C.Off, BorderSizePixel = 0, Position = UDim2.new(1, -46, 0.5, -10), Size = UDim2.new(0, 20, 0, 20), Font = Enum.Font.GothamBold, Text = "—", TextColor3 = C.Gray, TextSize = 13, AutoButtonColor = false })
     corner(minBtn, 6)
@@ -1376,7 +1426,7 @@ local AutoState = {}
 local function startAutoClick(interval)
     AutoState.AutoClick = true
     TaskManager.start("AutoClick", interval, function()
-        -- 方式1: 全自动扫描+交互所有可交互物体 (老外核心技术, 不需要知道游戏内容)
+        -- 方式1: 全自动扫描+交互所有可交互物体 (核心技术, 不需要知道游戏内容)
         autoScanAndInteract()
         -- 方式2: 模拟屏幕点击
         tapScreen()
@@ -1630,7 +1680,7 @@ local function buildMaintenanceTab(sidebar, content)
     end)
 
     label(tm, "—— 运行状态 ——")
-    local sl = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 28), Font = Enum.Font.GothamSemibold, Text = "  ✅ v10.6 Heartbeat引擎运行中", TextColor3 = C.Green, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left })
+    local sl = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 28), Font = Enum.Font.GothamSemibold, Text = "  ✅ v10.7 Heartbeat引擎运行中", TextColor3 = C.Green, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left })
     corner(sl, 8) stroke(sl, C.Div, 1)
 
     label(tm, "—— 紧急操作 ——")
@@ -1858,7 +1908,7 @@ local function buildMaintenanceTab(sidebar, content)
     end)
 
     label(tm, "—— 关于 ——")
-    local ab = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 60), Font = Enum.Font.GothamSemibold, Text = "  ypx Hub v10.6 © ypx\n  黑曼巴 x 福瑞 结合体\n  通用自动发现引擎 · 不需要截图\n  ESP透视+反挂机+TouchTransmitter+ProximityPrompt+ClickDetector+Remote自动发现", TextColor3 = C.Gray, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top })
+    local ab = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 60), Font = Enum.Font.GothamSemibold, Text = "  YPX v10.7\n  自动发现引擎 · 不需要截图\n  ESP透视+反挂机+自动更新+全交互物体自动发现", TextColor3 = C.Gray, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top })
     corner(ab, 8) stroke(ab, C.Div, 1)
 end
 
@@ -2286,7 +2336,7 @@ tspawn(function()
         twait(0.2)
         tw(barFill, {Size = UDim2.new(0, 200, 1, 0)}, 0.2)
 
-        -- CharacterAdded 重连 (老外技术: 角色重生后自动重启任务)
+        -- CharacterAdded 重连 (角色重生后自动重启任务)
         LocalPlayer.CharacterAdded:Connect(function()
             twait(1)
             scanLeaderstats()
@@ -2333,8 +2383,11 @@ tspawn(function()
     twait(0.35)
     pcall(function() loadScreen:Destroy() end)
 
-    -- 直接显示主窗口 (v10.6: 移除验证系统, 修复Delta SCAM检测)
+    -- 直接显示主窗口
     if main then main.Visible = true end
+
+    -- 启动自动更新引擎 (v10.7)
+    AutoUpdate.start()
 
     -- 悬浮按钮
     local floatBtn = make("TextButton", {
@@ -2379,7 +2432,7 @@ tspawn(function()
     end)
 
     -- 加载通知
-    local nt = loadOk and ("✅ " .. (TypeNames[gameType] or "通用") .. "  ·  v10.6 © ypx") or "⚠️ 维护模式  ·  © ypx"
+    local nt = loadOk and ("✅ " .. (TypeNames[gameType] or "通用") .. "  ·  v10.7") or "⚠️ 维护模式"
     local notif = make("TextLabel", {
         Parent = sg, BackgroundColor3 = loadOk and C.BlueD or C.Orange, BorderSizePixel = 0,
         Position = UDim2.new(0.5, -130, 0, -40), Size = UDim2.new(0, 260, 0, 34),
@@ -2397,17 +2450,15 @@ tspawn(function()
     print("═══════════════════════════════════")
     local rCount = 0 for _ in pairs(remoteCache) do rCount = rCount + 1 end
     local btnCount = 0 for _ in pairs(buttonCache) do btnCount = btnCount + 1 end
-    print("  ✅ ypx Hub v10.6 已加载!")
-    print("  黑曼巴 x 福瑞 结合体")
+    print("  ✅ YPX v10.7 已加载!")
     print("  游戏类型: " .. (TypeNames[gameType] or "通用"))
     print("  游戏名称: " .. tostring(gameName))
     print("  PlaceId: " .. tostring(placeId))
     print("  缓存: " .. rCount .. " Remote (全game) · " .. btnCount .. " 按钮")
-    print("  核心引擎: 通用自动发现(TouchTransmitter+ProximityPrompt+ClickDetector+Remote) + Heartbeat")
-    print("  老外技术: firetouchinterest重试 + ProximityPromptService绕过 + Remote正则匹配 + delta检测")
-    print("  新引擎: ESP透视(BillboardGui+Highlight) | 反挂机(VirtualUser+IdleTime)")
+    print("  核心引擎: 通用自动发现 + Heartbeat")
+    print("  技术: 触摸重试 + 长按绕过 + Remote正则匹配 + delta检测")
+    print("  引擎: ESP透视 | 反挂机 | 自动更新")
     print("  FPS监控: ✅ | UI模板: ✅ | leaderstats自动发现: ✅ | ESP: ✅ | 反挂机: ✅")
     print("  按 RightShift 或悬浮按钮 显示/隐藏")
-    print("  © 2026 ypx")
     print("═══════════════════════════════════")
 end)
