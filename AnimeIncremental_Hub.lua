@@ -5,7 +5,6 @@ local TS=game:GetService("TweenService")
 local RS=game:GetService("ReplicatedStorage")
 local WS=game:GetService("Workspace")
 local RS2=game:GetService("RunService")
-local VIM=game:GetService("VirtualInputManager")
 local VU=game:GetService("VirtualUser")
 local CG=game:GetService("CoreGui")
 local LP=P.LocalPlayer
@@ -23,6 +22,10 @@ pcall(function() fT=firetouchinterest end)
 pcall(function() fP=fireproximityprompt end)
 pcall(function() fC=fireclickdetector end)
 pcall(function() fS=firesignal end)
+
+-- 早期log/notif stub(后续替换为真实实现,保证定义顺序不影响调用)
+local log=function() end
+local notif=function() end
 
 local C={
 BG=Color3.fromRGB(10,10,16),BG2=Color3.fromRGB(6,6,12),
@@ -51,7 +54,7 @@ local function mk(cl,pr)
   return o
 end
 local function crn(p,r) mk("UICorner",{Parent=p,CornerRadius=UDim.new(0,r or 8)}) end
-local function stk(p,c,t) mk("UIStroke",{Parent=p,Color=c or C.Div,Thickness=t or 1,Transparency=0.4}) end
+local function stk(p,c,t,tr) mk("UIStroke",{Parent=p,Color=c or C.Div,Thickness=t or 1,Transparency=tr or 0.4}) end
 local function grd(p,c1,c2,r) mk("UIGradient",{Parent=p,Color=ColorSequence.new(c1,c2),Rotation=r or 0}) end
 local function pad(p,t,b,l,r) mk("UIPadding",{Parent=p,PaddingTop=UDim.new(0,t or 0),PaddingBottom=UDim.new(0,b or 0),PaddingLeft=UDim.new(0,l or 0),PaddingRight=UDim.new(0,r or 0)}) end
 
@@ -234,46 +237,46 @@ end
 
 local function hookRemote(r)
   if not r then return end
-  local mt=getmetatable(r)
-  if not mt then return end
+  local mt
+  local gok=pcall(function() mt=getmetatable(r) end)
+  if not gok or not mt then return end
   local name=r.Name
   local path=name
   pcall(function() path=r:GetFullName() end)
   local key1=name.."__ypx_ev"
   local key2=name.."__ypx_fn"
-  if rawget(r,key1) or rawget(r,key2) then return end
+  local already1,already2
+  pcall(function() already1=rawget(r,key1) end)
+  pcall(function() already2=rawget(r,key2) end)
+  if already1 or already2 then return end
   if r:IsA("RemoteEvent") then
     local oldFire=r.FireServer
-    rawset(r,key1,true)
+    pcall(function() rawset(r,key1,true) end)
     r.FireServer=function(self,...)
       if Spy.recording then
-        local ok,args=pcall(function() return {...} end)
-        if ok and args then
-          local dk=name.."|"..spyArgsKey(args)
-          if not Spy.recordMap[dk] then
-            Spy.recordMap[dk]=true
-            Spy.count=Spy.count+1
-            Spy.records[Spy.count]={name=name,path=path,args=args,cls="Event",time=os.date("%H:%M:%S")}
-            log("[SPY#"..Spy.count.."] "..name.."("..spyArgsKey(args)..")","info")
-          end
+        local args={...}
+        local dk=name.."|"..spyArgsKey(args)
+        if not Spy.recordMap[dk] then
+          Spy.recordMap[dk]=true
+          Spy.count=Spy.count+1
+          Spy.records[Spy.count]={name=name,path=path,args=args,cls="Event",time=os.date("%H:%M:%S")}
+          log("[SPY#"..Spy.count.."] "..name.."("..spyArgsKey(args)..")","info")
         end
       end
       return oldFire(self,...)
     end
   elseif r:IsA("RemoteFunction") then
     local oldInvoke=r.InvokeServer
-    rawset(r,key2,true)
+    pcall(function() rawset(r,key2,true) end)
     r.InvokeServer=function(self,...)
       if Spy.recording then
-        local ok,args=pcall(function() return {...} end)
-        if ok and args then
-          local dk=name.."|"..spyArgsKey(args)
-          if not Spy.recordMap[dk] then
-            Spy.recordMap[dk]=true
-            Spy.count=Spy.count+1
-            Spy.records[Spy.count]={name=name,path=path,args=args,cls="Func",time=os.date("%H:%M:%S")}
-            log("[SPY#"..Spy.count.."] "..name.."("..spyArgsKey(args)..")","info")
-          end
+        local args={...}
+        local dk=name.."|"..spyArgsKey(args)
+        if not Spy.recordMap[dk] then
+          Spy.recordMap[dk]=true
+          Spy.count=Spy.count+1
+          Spy.records[Spy.count]={name=name,path=path,args=args,cls="Func",time=os.date("%H:%M:%S")}
+          log("[SPY#"..Spy.count.."] "..name.."("..spyArgsKey(args)..")","info")
         end
       end
       return oldInvoke(self,...)
@@ -364,6 +367,35 @@ local function smartRemote(kw,...)
     if r then fireRemote(r) return 1 end
   end
   return 0
+end
+
+-- Remote分类表(必须在autoScanInteract之前定义)
+local rp={
+click={"click","train","attack","punch","tap"},
+farm={"kill","attack","damage","hit","collect","combat","fight"},
+buy={"buy","upgrade","purchase","enhance","boost","levelup","level_up"},
+rebirth={"rebirth","prestige","ascend","reset","reincarnate"},
+rune={"rune","roll","reroll","pull","gacha","spin","open","summon"},
+perk={"perk","talent","skill","invest","allocate","upgrade"},
+potion={"use","drink","activate","potion","consume","buff","eat"},
+claim={"claim","reward","collect","redeem","daily","free"},
+equip={"equip","equipbest","equipall","autoequip"},
+sell={"sell","delete","trash","remove","discard"}
+}
+local function findRemoteByType(ty)
+  local kws=rp[ty]
+  if not kws then return nil end
+  for _,kw in ipairs(kws) do
+    local r=getRemote(kw)
+    if r then return r end
+  end
+  for _,kw in ipairs(kws) do
+    local lkw=string.lower(kw)
+    for n,r in pairs(remoteCache) do
+      if n:find(lkw,1,true) then return r end
+    end
+  end
+  return nil
 end
 
 local lsc={}
@@ -509,9 +541,15 @@ local function autoScanInteract()
       c=c+1
     end
   end
-  c=c+clickAllBtns({"buy","buymax","buy max","max","upgrade","claim","reward","collect","train","attack","click","open","use","equip","sell","roll","reroll","purchase"})
+  -- v12.5: 纯远程调用,不点击任何按钮,不干扰用户触摸
   local fired=0
-  for _,ty in ipairs({"click","farm","buy","claim","potion","equip","rune"}) do
+  -- 1. 优先Spy重放所有类型
+  for _,ty in ipairs({"click","farm","buy","claim","potion","equip","rune","sell","roll","open","upgrade","train","attack"}) do
+    local played=Spy.replay(ty)
+    if played>0 then fired=fired+played end
+  end
+  -- 2. Remote直调
+  for _,ty in ipairs({"click","farm","buy","claim","potion","equip","rune","sell"}) do
     local r=findRemoteByType(ty)
     if r then fireRemote(r) fired=fired+1 end
   end
@@ -599,34 +637,6 @@ local function clickAllBtns(kws)
     end
   end
   return clicked
-end
-
-local rp={
-click={"click","train","attack","punch","tap"},
-farm={"kill","attack","damage","hit","collect","combat","fight"},
-buy={"buy","upgrade","purchase","enhance","boost","levelup","level_up"},
-rebirth={"rebirth","prestige","ascend","reset","reincarnate"},
-rune={"rune","roll","reroll","pull","gacha","spin","open","summon"},
-perk={"perk","talent","skill","invest","allocate","upgrade"},
-potion={"use","drink","activate","potion","consume","buff","eat"},
-claim={"claim","reward","collect","redeem","daily","free"},
-equip={"equip","equipbest","equipall","autoequip"},
-sell={"sell","delete","trash","remove","discard"}
-}
-local function findRemoteByType(ty)
-  local kws=rp[ty]
-  if not kws then return nil end
-  for _,kw in ipairs(kws) do
-    local r=getRemote(kw)
-    if r then return r end
-  end
-  for _,kw in ipairs(kws) do
-    local lkw=string.lower(kw)
-    for n,r in pairs(remoteCache) do
-      if n:find(lkw,1,true) then return r end
-    end
-  end
-  return nil
 end
 
 -- ==================== TaskManager ====================
@@ -755,7 +765,7 @@ local flyDn=mk("TextButton",{
 })
 crn(flyDn,7)
 
-local function notif(t,c)
+function notif(t,c)
   local n=mk("TextLabel",{
     Parent=sg,BackgroundColor3=c or C.BlueD,BorderSizePixel=0,
     Position=UDim2.new(0.5,-130,0,-40),Size=UDim2.new(0,260,0,32),
@@ -890,7 +900,204 @@ function LogSys.add(msg,level)
     end)
   end
 end
-local function log(msg,level) LogSys.add(msg,level) end
+function log(msg,level) LogSys.add(msg,level) end
+
+-- ==================== AutoDiscovery 自动发现引擎 ====================
+-- 自动扫描游戏所有RemoteEvent/RemoteFunction，按名称分类生成循环功能
+-- 不需要用户录制，脚本自动识别有用的远程调用
+local AD={}
+AD.loops={}        -- remoteName -> true(正在循环)
+AD.interval=1.0    -- 循环间隔
+AD.widgets={}      -- UI控件缓存
+AD.scanned=false   -- 是否已扫描
+AD.remotes={}      -- 扫描结果 {name=remote, ...}
+AD.byCat={}        -- 按分类分组
+
+AD.catNames={
+  click="⚡ 点击/攻击",farm="⚔️ 农场/战斗",buy="🛒 购买/升级",
+  rebirth="🔄 重生",rune="🔮 符文/抽卡",perk="🎯 天赋/技能",
+  potion="💊 药水/Buff",claim="🎁 领取/奖励",equip="🎽 装备",
+  sell="💰 出售",other="📦 其他"
+}
+AD.catOrder={"click","farm","buy","rebirth","rune","perk","potion","claim","equip","sell","other"}
+
+function AD.categorize(name)
+  local ln=string.lower(name)
+  for _,ty in ipairs(AD.catOrder) do
+    if ty~="other" then
+      local kws=rp[ty]
+      if kws then
+        for _,kw in ipairs(kws) do
+          if ln:find(string.lower(kw),1,true) then return ty end
+        end
+      end
+    end
+  end
+  return "other"
+end
+
+-- 扫描全game的Remote
+function AD.scan()
+  AD.remotes={}
+  AD.byCat={}
+  pcall(function()
+    for _,o in pairs(game:GetDescendants()) do
+      if o:IsA("RemoteEvent") or o:IsA("RemoteFunction") then
+        local n=o.Name
+        if not AD.remotes[n] then
+          AD.remotes[n]=o
+          local cat=AD.categorize(n)
+          if not AD.byCat[cat] then AD.byCat[cat]={} end
+          table.insert(AD.byCat[cat],o)
+        end
+      end
+    end
+  end)
+  -- 监听新增的Remote
+  if not AD.descConn then
+    AD.descConn=game.DescendantAdded:Connect(function(o)
+      if o:IsA("RemoteEvent") or o:IsA("RemoteFunction") then
+        local n=o.Name
+        if not AD.remotes[n] then
+          AD.remotes[n]=o
+          local cat=AD.categorize(n)
+          if not AD.byCat[cat] then AD.byCat[cat]={} end
+          table.insert(AD.byCat[cat],o)
+        end
+      end
+    end)
+  end
+  AD.scanned=true
+  local c=0
+  for _ in pairs(AD.remotes) do c=c+1 end
+  return c
+end
+
+-- 启动循环
+function AD.startLoop(r)
+  local n=r.Name
+  AD.loops[n]=true
+  TM.start("AD_"..n,AD.interval,function()
+    pcall(function() fireRemote(r) end)
+  end)
+end
+
+-- 停止循环
+function AD.stopLoop(r)
+  local n=r.Name
+  AD.loops[n]=false
+  TM.stop("AD_"..n)
+end
+
+-- 停止全部
+function AD.stopAll()
+  for n,_ in pairs(AD.loops) do
+    AD.loops[n]=false
+    TM.stop("AD_"..n)
+  end
+end
+
+-- 生成功能UI
+function AD.generate(container)
+  AD.stopAll()
+  for _,w in pairs(AD.widgets) do pcall(function() w:Destroy() end) end
+  AD.widgets={}
+  if not container then return end
+
+  if not AD.scanned then AD.scan() end
+  local total=0
+  for _ in pairs(AD.remotes) do total=total+1 end
+
+  if total==0 then
+    local e=mk("TextLabel",{Parent=container,BackgroundTransparency=1,Size=UDim2.new(1,-4,0,24),Font=Enum.Font.GothamSemibold,Text="未发现任何Remote,请先点击重新扫描",TextColor3=C.Orange,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left})
+    table.insert(AD.widgets,e)
+    return
+  end
+
+  -- 统计
+  local info=mk("TextLabel",{Parent=container,BackgroundTransparency=1,Size=UDim2.new(1,-4,0,20),Font=Enum.Font.GothamBold,Text="发现 "..total.." 个Remote | 间隔: "..AD.interval.."s",TextColor3=C.BlueL,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left})
+  table.insert(AD.widgets,info)
+
+  -- 全部循环
+  local allOn=false
+  local allBtn=mk("TextButton",{Parent=container,BackgroundColor3=C.Card,BorderSizePixel=0,Size=UDim2.new(1,-4,0,30),Font=Enum.Font.GothamBold,Text="▶ 全部循环开启",TextColor3=C.Green,TextSize=11,AutoButtonColor=false})
+  crn(allBtn,8) stk(allBtn,C.Green,1)
+  table.insert(AD.widgets,allBtn)
+  allBtn.MouseButton1Click:Connect(function()
+    allOn=not allOn
+    if allOn then
+      for n,r in pairs(AD.remotes) do AD.startLoop(r) end
+      allBtn.Text="⏸ 全部循环停止"
+      tw(allBtn,{BackgroundColor3=C.CardH})
+      notif("全部循环已开启: "..total.."个",C.Green)
+      log("AD全部循环: "..total.."个Remote","ok")
+    else
+      AD.stopAll()
+      allBtn.Text="▶ 全部循环开启"
+      tw(allBtn,{BackgroundColor3=C.Card})
+      notif("全部循环已停止",C.Orange)
+    end
+  end)
+
+  -- 按分类生成
+  for _,cat in ipairs(AD.catOrder) do
+    if AD.byCat[cat] and #AD.byCat[cat]>0 then
+      local items=AD.byCat[cat]
+      -- 分类标题
+      local catLbl=mk("TextLabel",{Parent=container,BackgroundTransparency=1,Size=UDim2.new(1,-4,0,18),Font=Enum.Font.GothamBold,Text=(AD.catNames[cat] or cat).." ("..#items.."个)",TextColor3=C.BlueL,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left})
+      table.insert(AD.widgets,catLbl)
+
+      -- 分类批量按钮
+      local catBtn=mk("TextButton",{Parent=container,BackgroundColor3=C.Side,BorderSizePixel=0,Size=UDim2.new(1,-4,0,26),Font=Enum.Font.GothamSemibold,Text="  ↻ 循环本类全部",TextColor3=C.Gray,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left,AutoButtonColor=false})
+      crn(catBtn,6) stk(catBtn,C.Div,1)
+      table.insert(AD.widgets,catBtn)
+      local catOn=false
+      catBtn.MouseButton1Click:Connect(function()
+        catOn=not catOn
+        if catOn then
+          for _,r in ipairs(items) do AD.startLoop(r) end
+          tw(catBtn,{BackgroundColor3=C.BlueD,TextColor3=C.White})
+          catBtn.Text="  ⏸ 停止本类循环"
+        else
+          for _,r in ipairs(items) do AD.stopLoop(r) end
+          tw(catBtn,{BackgroundColor3=C.Side,TextColor3=C.Gray})
+          catBtn.Text="  ↻ 循环本类全部"
+        end
+      end)
+
+      -- 单条toggle
+      for _,r in ipairs(items) do
+        local dn=r.Name
+        if #dn>35 then dn=dn:sub(1,32).."..." end
+        local cls=r:IsA("RemoteEvent") and "Event" or "Func"
+        local h=mk("Frame",{Parent=container,BackgroundColor3=C.Card,BorderSizePixel=0,Size=UDim2.new(1,-4,0,30)})
+        crn(h,8) stk(h,C.Div,1) grd(h,C.Card,C.CardH,90)
+        table.insert(AD.widgets,h)
+        mk("TextLabel",{Parent=h,BackgroundTransparency=1,Position=UDim2.new(0,10,0,0),Size=UDim2.new(1,-56,1,0),Font=Enum.Font.GothamSemibold,Text="  "..dn.."  ["..cls.."]",TextColor3=C.White,TextSize=9,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+        local tog=mk("TextButton",{Parent=h,BackgroundColor3=C.Off,BorderSizePixel=0,Position=UDim2.new(1,-40,0.5,-9),Size=UDim2.new(0,32,0,18),Text="",AutoButtonColor=false})
+        crn(tog,99)
+        local kb=mk("Frame",{Parent=tog,BackgroundColor3=C.White,BorderSizePixel=0,Size=UDim2.new(0,12,0,12),Position=UDim2.new(0,3,0.5,-6)})
+        crn(kb,99)
+        local on=false
+        local function setAD(v)
+          on=v
+          tw(tog,{BackgroundColor3=v and C.On or C.Off})
+          tw(kb,{Position=v and UDim2.new(1,-15,0.5,-6) or UDim2.new(0,3,0.5,-6)})
+          if v then AD.startLoop(r) log("AD循环: "..r.Name,"ok")
+          else AD.stopLoop(r) end
+        end
+        tog.MouseButton1Click:Connect(function() setAD(not on) end)
+        h.InputBegan:Connect(function(i)
+          if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+            setAD(not on)
+          end
+        end)
+      end
+    end
+  end
+  notif("已生成 "..total.." 个自动发现功能",C.Green)
+  log("自动发现功能已生成: "..total.."个Remote","ok")
+end
 local _origPrint=print
 local function ypxPrint(...)
   local args={...}
@@ -1237,15 +1444,11 @@ function AAFK.start()
       end)
     end)
   end)
+  -- v12.5: 纯净反挂机 - 只用VU服务端模拟(不动鼠标/不动键盘),移除VIM键盘模拟避免角色乱跳
   TM.start("AntiAFK",30,function()
     pcall(function()
       VU:CaptureController()
       VU:ClickButton2(Vector2.new())
-    end)
-    pcall(function()
-      VIM:SendKeyEvent(true,Enum.KeyCode.Space,false,game)
-      task.wait(0.05)
-      VIM:SendKeyEvent(false,Enum.KeyCode.Space,false,game)
     end)
   end)
   notif("反挂机已启动",C.Green)
@@ -1553,7 +1756,7 @@ local function buildMain(gtn)
   clB.MouseButton1Click:Connect(function()
     tw(main,{Size=UDim2.new(0,0,0,0),Position=UDim2.new(0.5,0,0.5,0)},0.2)
     tdelay(0.25,function()
-      TM.stopAll() stopFPS() VFX.clear()
+      TM.stopAll() AD.stopAll() stopFPS() VFX.clear()
       stopFly() setNoclip(false) wsA=false
       sg:Destroy()
     end)
@@ -1671,17 +1874,23 @@ local function buildMenu(sb,ct,gn)
             fireProx(best)
             fireCD(best)
             VFX.target(best)
-            local r=getRemoteFuzzy("attack","click","train","hit","damage","kill","combat","punch")
-            if r then fireRemote(r) end
-            local r2=findRemoteByType("farm")
-            if r2 and r2~=r then fireRemote(r2) end
+            -- v12.5: 纯远程调用攻击,不点击任何按钮,不干扰用户
+            local played=Spy.replay("attack")
+            if played==0 then played=Spy.replay("click") end
+            if played==0 then played=Spy.replay("train") end
+            if played==0 then played=Spy.replay("farm") end
+            if played==0 then
+              local r=getRemoteFuzzy("attack","click","train","hit","damage","kill","combat","punch")
+              if r then fireRemote(r) end
+              local r2=findRemoteByType("farm")
+              if r2 and r2~=r then fireRemote(r2) end
+            end
             pcall(function()
               local hum=getHum()
               if hum then
                 hum:ChangeState(Enum.HumanoidStateType.Attacking)
               end
             end)
-            clickBtn("attack","train","hit","punch","click","fight")
           end)
         else
           farmLocked=false
@@ -1716,12 +1925,23 @@ local function buildMenu(sb,ct,gn)
       AS.AutoBuyUpg=true
       log("自动购买升级已启动","info")
       TM.start("AutoBuyUpg",0.5,function()
-        scanBtns()
-        local clicked=clickAllBtns({"buy","buymax","buy max","max","purchase","upgrade"})
-        if clicked>0 then
+        -- v12.5: Spy/Remote优先,clickAllBtns降为最后手段(静默firesignal,不干扰用户)
+        local done=false
+        -- 1. Spy重放
+        local played=Spy.replay("buy")
+        if played==0 then played=Spy.replay("upgrade") end
+        if played==0 then played=Spy.replay("purchase") end
+        if played>0 then done=true end
+        -- 2. Remote直调
+        if not done then
           local r=findRemoteByType("buy")
-          if r then fireRemote(r) end
-          if math.random(1,20)==1 then log("自动购买: 点击了"..clicked.."个按钮","ok") end
+          if r then fireRemote(r) done=true end
+        end
+        -- 3. 最后fallback: 静默firesignal(不用VIM,不干扰用户触摸)
+        if not done then
+          scanBtns()
+          local clicked=clickAllBtns({"buy","buymax","buy max","max","purchase","upgrade"})
+          if clicked>0 and math.random(1,20)==1 then log("自动购买(fallback): 静默触发"..clicked.."个按钮","ok") end
         end
       end)
     else
@@ -1757,14 +1977,19 @@ local function buildMenu(sb,ct,gn)
             end
           end
         end)
-        -- 优先Spy重放
+        -- v12.5: Spy/Remote优先,clickBtn降为最后手段(静默firesignal)
         local played=Spy.replay("pack")
         if played==0 then played=Spy.replay("open") end
         if played==0 then played=Spy.replay("gacha") end
+        if played==0 then played=Spy.replay("roll") end
+        -- Remote直调
+        if played==0 then
+          local r=findRemoteByType("rune")
+          if r then fireRemote(r) played=1 end
+        end
+        -- 最后fallback: 静默firesignal(不用VIM,不干扰用户)
         if played==0 then
           clickBtn("open","roll","summon","gacha","spin","pull","pack")
-          local r=findRemoteByType("rune")
-          if r then fireRemote(r) end
         end
         if found and math.random(1,20)==1 then log("自动开包: 找到包/平台","ok") end
       end)
@@ -1989,72 +2214,27 @@ local function buildMenu(sb,ct,gn)
       log("自动天赋已关闭","warn")
     end
   end)
-  toggle(t4,"自动药水",false,function(v)
+  toggle(t4,"自动药水(远程调用)",false,function(v)
     if v then
       AS.AutoPotion=true
       log("自动药水已启动","info")
-      TM.start("AutoPotion",1.5,function()
+      TM.start("AutoPotion",2,function()
         local used=false
-        -- 1. 先打开背包/库存界面
-        pcall(function()
-          local pg=LP:FindFirstChild("PlayerGui")
-          if pg then
-            -- 尝试点击背包/库存按钮打开界面
-            for _,b in pairs(pg:GetDescendants()) do
-              if (b:IsA("TextButton") or b:IsA("ImageButton")) and b.Visible~=false and b.Active~=false then
-                local bn=string.lower(b.Name)
-                local bt=b:IsA("TextButton") and string.lower(b.Text or "") or ""
-                if bn:find("inventory",1,true) or bn:find("backpack",1,true) or bn:find("bag",1,true) or bn:find("背包",1,true) or bn:find("库存",1,true) or bt:find("inventory",1,true) or bt:find("backpack",1,true) or bt:find("bag",1,true) or bt:find("背包",1,true) or bt:find("库存",1,true) then
-                  pcall(function()
-                    if fS then pcall(fS,b.Activated) pcall(fS,b.MouseButton1Click) end
-                    pcall(function() b:Activate() end)
-                    pcall(function()
-                      local cx=b.AbsolutePosition.X+b.AbsoluteSize.X/2
-                      local cy=b.AbsolutePosition.Y+b.AbsoluteSize.Y/2
-                      VIM:SendMouseButtonEvent(cx,cy,0,true,b,1)
-                      VIM:SendMouseButtonEvent(cx,cy,0,false,b,1)
-                    end)
-                  end)
-                  break
-                end
-              end
-            end
+        -- 1. 优先Spy重放
+        local played=Spy.replay("potion")
+        if played>0 then used=true return end
+        played=Spy.replay("use")
+        if played>0 then used=true return end
+        -- 2. Remote直调
+        if not used then
+          local r=findRemoteByType("potion")
+          if r then fireRemote(r) used=true end
+          if not used then
+            local r2=getRemoteFuzzy("usepotion","use_potion","drinkpotion","activatepotion","usebuff","use_buff")
+            if r2 then fireRemote(r2) used=true end
           end
-        end)
-        twait(0.2)
-        -- 2. 在打开的界面内点击药水
-        pcall(function()
-          local pg=LP:FindFirstChild("PlayerGui")
-          if pg then
-            for _,b in pairs(pg:GetDescendants()) do
-              if (b:IsA("TextButton") or b:IsA("ImageButton")) and b.Visible~=false and b.Active~=false then
-                local bn=string.lower(b.Name)
-                local bt=b:IsA("TextButton") and string.lower(b.Text or "") or ""
-                -- 检测药水相关名称
-                local isPotion=bn:find("potion",1,true) or bn:find("boost",1,true) or bn:find("buff",1,true) or bn:find("elixir",1,true) or bn:find("drink",1,true) or bn:find("flask",1,true) or bn:find("药水",1,true) or bn:find("药",1,true) or bt:find("potion",1,true) or bt:find("药水",1,true) or bt:find("use",1,true) or bt:find("drink",1,true) or bt:find("consume",1,true) or bt:find("activate",1,true)
-                if isPotion then
-                  -- 排除关闭/返回按钮
-                  local skip=bn:find("close",1,true) or bn:find("exit",1,true) or bn:find("back",1,true) or bn:find("return",1,true) or bt:find("close",1,true) or bt:find("exit",1,true) or bt:find("返回",1,true) or bt:find("关闭",1,true)
-                  if not skip then
-                    pcall(function()
-                      if fS then pcall(fS,b.Activated) pcall(fS,b.MouseButton1Click) end
-                      pcall(function() b:Activate() end)
-                      pcall(function()
-                        local cx=b.AbsolutePosition.X+b.AbsoluteSize.X/2
-                        local cy=b.AbsolutePosition.Y+b.AbsoluteSize.Y/2
-                        VIM:SendMouseButtonEvent(cx,cy,0,true,b,1)
-                        VIM:SendMouseButtonEvent(cx,cy,0,false,b,1)
-                      end)
-                      used=true
-                      log("点击药水: "..b.Name,"ok")
-                    end)
-                  end
-                end
-              end
-            end
-          end
-        end)
-        -- 3. 备用: 尝试背包Tool
+        end
+        -- 3. 背包Tool装备使用(静默,不模拟点击)
         if not used then
           pcall(function()
             local backpack=LP:FindFirstChild("Backpack")
@@ -2082,12 +2262,9 @@ local function buildMenu(sb,ct,gn)
             end
           end)
         end
-        -- 4. 备用: Remote
+        -- 4. 最后fallback: 静默firesignal(不用VIM)
         if not used then
-          local r=findRemoteByType("potion")
-          if r then fireRemote(r) used=true end
-          local r2=getRemoteFuzzy("usepotion","use_potion","drinkpotion","activatepotion","usebuff","use_buff")
-          if r2 then fireRemote(r2) used=true end
+          clickBtn("use","drink","activate","potion","consume","buff")
         end
       end)
     else
@@ -2222,6 +2399,50 @@ local function buildMenu(sb,ct,gn)
     pl.TextColor3=fpsV>=50 and C.Green or fpsV>=30 and C.Orange or C.Red
   end)
 
+  -- ===== 自动发现标签页 =====
+  local t_ad,s_ad=newTab(sb,ct,"自动发现","🎮")
+  mk("TextLabel",{
+    Parent=t_ad,BackgroundTransparency=1,Size=UDim2.new(1,-4,0,28),
+    Font=Enum.Font.GothamSemibold,
+    Text="自动扫描游戏所有Remote,按分类生成循环远程调用\n无需录制,开启即用,纯远程不干扰用户",
+    TextColor3=C.Gray,TextSize=9,TextXAlignment=Enum.TextXAlignment.Left,
+    TextWrapped=true
+  })
+  slider(t_ad,"循环间隔(秒)",0.1,10,AD.interval,function(v)
+    AD.interval=v
+    for n,on in pairs(AD.loops) do
+      if on then
+        local r=AD.remotes[n]
+        if r then
+          TM.stop("AD_"..n)
+          TM.start("AD_"..n,AD.interval,function()
+            pcall(function() fireRemote(r) end)
+          end)
+        end
+      end
+    end
+  end)
+  button(t_ad,"🔍 重新扫描Remote",function()
+    local c=AD.scan()
+    notif("扫描完成: "..c.."个Remote",C.Green)
+    log("AD扫描: "..c.."个Remote","ok")
+  end)
+  button(t_ad,"🎮 生成/刷新自动功能",function()
+    AD.generate(t_ad)
+  end)
+  button(t_ad,"⏹ 停止全部循环",function()
+    AD.stopAll()
+    notif("已停止全部循环",C.Orange)
+    log("AD手动停止全部","warn")
+  end)
+  mk("Frame",{Parent=t_ad,BackgroundColor3=C.Div,BorderSizePixel=0,Size=UDim2.new(1,-4,0,1)})
+  local adHint=mk("TextLabel",{
+    Parent=t_ad,BackgroundTransparency=1,Size=UDim2.new(1,-4,0,24),
+    Font=Enum.Font.GothamSemibold,
+    Text="点击「生成/刷新自动功能」创建循环功能按钮",
+    TextColor3=C.Orange,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left
+  })
+
   local t8,s8=newTab(sb,ct,"日志","📋")
   LogSys.scroll=mk("ScrollingFrame",{
     Parent=t8,BackgroundTransparency=1,BorderSizePixel=0,
@@ -2286,11 +2507,59 @@ end
 
 local TN={universal="通用模式",anime_incremental="Anime Inc."}
 
+-- ==================== 错误自动修复引擎 ====================
+local ErrorGuard={}
+ErrorGuard.errors={}
+ErrorGuard.maxErrors=20
+function ErrorGuard.wrap(name,fn)
+  return function(...)
+    local ok,err=pcall(fn,...)
+    if not ok then
+      if #ErrorGuard.errors<ErrorGuard.maxErrors then
+        table.insert(ErrorGuard.errors,{name=name,err=tostring(err),time=os.date("%H:%M:%S")})
+      end
+      return nil
+    end
+    return select(1,...)
+  end
+end
+function ErrorGuard.try(fn,...)
+  local ok,err=pcall(fn,...)
+  if not ok then
+    if #ErrorGuard.errors<ErrorGuard.maxErrors then
+      table.insert(ErrorGuard.errors,{name="try",err=tostring(err),time=os.date("%H:%M:%S")})
+    end
+    return false,err
+  end
+  return true
+end
+function ErrorGuard.getErrors()
+  return ErrorGuard.errors
+end
+function ErrorGuard.clear()
+  ErrorGuard.errors={}
+end
+
 -- ==================== 主加载流程 ====================
 tspawn(function()
   local gT,gN,pId
   local main,sb,ct
   local ok,err
+
+  -- 安全超时: 无论如何15秒后强制完成加载
+  tdelay(15,function()
+    pcall(function()
+      if ls and ls.Parent then
+        tw(ls,{BackgroundTransparency=1},0.3)
+        for _,o in pairs(ls:GetChildren()) do
+          if o:IsA("TextLabel") then tw(o,{TextTransparency=1},0.3) end
+        end
+        tw(bb,{BackgroundTransparency=1},0.3)
+        tw(bf,{BackgroundTransparency=1},0.3)
+        tdelay(0.4,function() pcall(function() ls:Destroy() end) end)
+      end
+    end)
+  end)
 
   ok,err=pcall(function()
     stT.Text="正在初始化..." twait(0.3)
@@ -2337,11 +2606,22 @@ tspawn(function()
 
   if not ok then
     log("[YPX Error] "..tostring(err),"err")
-    pcall(function()
-      gT="universal" gN="错误恢复"
-      main,sb,ct=buildMain("维护模式")
-      buildMenu(sb,ct,gN)
-    end)
+    log("错误详情: "..tostring(err),"err")
+    local errCount=#ErrorGuard.errors
+    if errCount>0 then
+      log("之前捕获了 "..errCount.." 个错误","warn")
+    end
+    -- 尝试降级运行: 只构建主框架,不构建完整菜单
+    if not main then
+      pcall(function()
+        gT="universal" gN="错误恢复"
+        main,sb,ct=buildMain("维护模式")
+      end)
+    end
+    -- 尝试构建菜单(每个标签页独立pcall,一个失败不影响其他)
+    if main and sb and ct then
+      pcall(function() buildMenu(sb,ct,gN or "未知") end)
+    end
     pcall(function()
       cdT.Text="⚠️"
       stT.Text="维护模式启动"
