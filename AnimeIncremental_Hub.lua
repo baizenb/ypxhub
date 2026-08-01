@@ -1,4 +1,4 @@
---[[ YPX v12.3 ]]
+--[[ YPX v12.4 ]]
 local P=game:GetService("Players")
 local UIS=game:GetService("UserInputService")
 local TS=game:GetService("TweenService")
@@ -613,6 +613,67 @@ local function notif(t,c)
   end)
 end
 
+-- 右下角符文通知
+local runeNotifY=0
+local function runeNotif(t,c)
+  local yOff=runeNotifY
+  runeNotifY=runeNotifY+42
+  if runeNotifY>168 then runeNotifY=0 end
+  local n=mk("TextLabel",{
+    Parent=sg,BackgroundColor3=c or C.Gold,BorderSizePixel=0,
+    Position=UDim2.new(1,0,1,-50-yOff),Size=UDim2.new(0,220,0,36),
+    Font=Enum.Font.GothamSemibold,Text="  "..t,TextColor3=C.White,TextSize=12,
+    TextXAlignment=Enum.TextXAlignment.Left
+  })
+  crn(n,8) stk(n,c or C.Gold,1) grd(n,c or C.Gold,C.CardH,90)
+  tw(n,{Position=UDim2.new(1,-240,1,-50-yOff)},0.25)
+  tdelay(2.5,function()
+    tw(n,{Position=UDim2.new(1,0,1,-50-yOff)},0.3)
+    tdelay(0.35,function() pcall(function() n:Destroy() end) end)
+  end)
+end
+
+-- 89R币弹窗拦截器
+local block89RConn
+local block89RAcc=0
+local function startBlock89R()
+  if block89RConn then return end
+  block89RConn=RS2.Heartbeat:Connect(function(dt)
+    block89RAcc=block89RAcc+dt
+    if block89RAcc<0.3 then return end
+    block89RAcc=0
+    pcall(function()
+      local pg=LP:FindFirstChild("PlayerGui")
+      if not pg then return end
+      for _,gui in pairs(pg:GetChildren()) do
+        if gui~=sg and (gui:IsA("ScreenGui") or gui:IsA("Frame")) then
+          for _,d in pairs(gui:GetDescendants()) do
+            if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Visible~=false then
+              local txt=tostring(d.Text or "")
+              local is89R=txt:find("89R",1,true) or txt:find("89 R",1,true) or txt:find("R币",1,true) or (txt:find("89",1,true) and txt:find("R",1,true)) or (txt:find("+10",1,true) and txt:find("R",1,true))
+              if is89R then
+                -- 找到弹窗容器并移除
+                local popup=d.Parent
+                while popup and popup~=pg and popup~=gui do
+                  if popup:IsA("Frame") then
+                    pcall(function() popup:Destroy() end)
+                    break
+                  end
+                  popup=popup.Parent
+                end
+                if not popup or popup==gui or popup==pg then
+                  pcall(function() gui:Destroy() end)
+                end
+                break
+              end
+            end
+          end
+        end
+      end
+    end)
+  end)
+end
+
 -- ==================== 日志系统 ====================
 local LogSys={}
 LogSys.lines={}
@@ -1080,7 +1141,7 @@ local tL=mk("TextLabel",{
 stk(tL,C.Blue,1.5,0.3)
 local sL=mk("TextLabel",{
   Parent=ls,BackgroundTransparency=1,Position=UDim2.new(0.5,-120,0.3,50),
-  Size=UDim2.new(0,240,0,18),Font=Enum.Font.GothamSemibold,Text="YPX  v12.3",
+  Size=UDim2.new(0,240,0,18),Font=Enum.Font.GothamSemibold,Text="YPX  v12.4",
   TextColor3=C.Gold,TextSize=13
 })
 local stT=mk("TextLabel",{
@@ -1278,7 +1339,7 @@ local function buildMain(gtn)
   })
   local vLbl=mk("TextLabel",{
     Parent=tb,BackgroundTransparency=1,Position=UDim2.new(1,-100,0,0),
-    Size=UDim2.new(0,50,1,0),Font=Enum.Font.GothamSemibold,Text="v12.3",
+    Size=UDim2.new(0,50,1,0),Font=Enum.Font.GothamSemibold,Text="v12.4",
     TextColor3=C.Gold,TextSize=10,TextXAlignment=Enum.TextXAlignment.Right
   })
   local mnB=mk("TextButton",{
@@ -1395,9 +1456,11 @@ local function buildMenu(sb,ct,gn)
     if v then
       AS.AutoFarm=true
       log("自动农场已启动","info")
+      local farmLocked=false
+      local lockPos=nil
       TM.start("AutoFarm",0.5,function()
         local root=getRoot()
-        if not root then return end
+        if not root then farmLocked=false lockPos=nil return end
         local best=nil local bd=9999
         local myChar=LP.Character
         local playerChars={}
@@ -1418,11 +1481,24 @@ local function buildMenu(sb,ct,gn)
         end
         if best then
           tspawn(function()
-            pcall(function()
-              root.CFrame=best.CFrame*CFrame.new(0,0,3)
-              root.Velocity=Vector3.zero
-            end)
-            twait(0.05)
+            -- 只在距离>20时传送,到达后不再传送
+            if bd>20 then
+              farmLocked=false
+              lockPos=nil
+              pcall(function()
+                root.CFrame=best.CFrame*CFrame.new(0,0,3)
+                root.Velocity=Vector3.zero
+              end)
+              twait(0.05)
+            else
+              -- 已经到达,锁定位置不再传送
+              if not farmLocked then
+                farmLocked=true
+                lockPos=root.Position
+                log("已到达杀怪位置,锁定不再传送","ok")
+              end
+            end
+            -- 攻击逻辑(不论是否传送都执行)
             if fT then
               pcall(function()
                 fT(root,best,0)
@@ -1444,14 +1520,10 @@ local function buildMenu(sb,ct,gn)
               end
             end)
             clickBtn("attack","train","hit","punch","click","fight")
-            if bd<15 then
-              pcall(function()
-                root.CFrame=best.CFrame*CFrame.new(math.random(-2,2),0,math.random(2,4))
-                root.Velocity=Vector3.zero
-              end)
-            end
           end)
         else
+          farmLocked=false
+          lockPos=nil
           VFX.clear()
         end
       end)
@@ -1565,20 +1637,7 @@ local function buildMenu(sb,ct,gn)
   end)
 
   local t2,s2=newTab(sb,ct,"商店","🛒")
-  toggle(t2,"自动购买",false,function(v)
-    if v then
-      AS.AutoBuy=true
-      log("自动购买已启动","info")
-      TM.start("AutoBuy",1,function()
-        local r=findRemoteByType("buy")
-        if r then fireRemote(r) end
-        clickBtn("buy","purchase","upgrade")
-      end)
-    else
-      AS.AutoBuy=false TM.stop("AutoBuy")
-      log("自动购买已关闭","warn")
-    end
-  end)
+  -- 已移除自动购买功能(避免89R币弹窗)
   toggle(t2,"升级树(自动升级)",false,function(v)
     if v then
       AS.AutoUpgrade=true
@@ -1703,6 +1762,56 @@ local function buildMenu(sb,ct,gn)
       log("自动抽符文已关闭","warn")
     end
   end)
+  toggle(t3,"符文全图吸取",false,function(v)
+    if v then
+      AS.AutoRuneMap=true
+      log("符文全图吸取已启动","info")
+      runeNotifY=0
+      local runeCount=0
+      TM.start("AutoRuneMap",0.3,function()
+        local root=getRoot()
+        if not root then return end
+        local collected=false
+        pcall(function()
+          for _,o in pairs(WS:GetDescendants()) do
+            if o:IsA("BasePart") and not o:IsDescendantOf(LP.Character or Instance.new("Folder")) then
+              local ln=string.lower(o.Name)
+              if ln:find("rune",1,true) or ln:find("符文",1,true) then
+                local d=(o.Position-root.Position).Magnitude
+                if d<2000 then
+                  tspawn(function()
+                    -- 传送到符文位置
+                    tpTo(o,Vector3.new(0,3,0))
+                    twait(0.05)
+                    -- 触摸吸取
+                    fireTouch(o)
+                    fireProx(o)
+                    fireCD(o)
+                    -- 触发Remote
+                    local r=getRemoteFuzzy("collectrune","collect_rune","pickuprune","pickup_rune","claimrune","claim_rune","getrune","get_rune","rune")
+                    if r then fireRemote(r) end
+                  end)
+                  collected=true
+                  runeCount=runeCount+1
+                  runeNotif("✅ 成功获取符文 #"..runeCount,C.Gold)
+                  break
+                end
+              end
+            end
+          end
+        end)
+        -- 也尝试点击符文相关按钮
+        if not collected then
+          clickBtn("rune","collect","pickup","claim")
+          local r=findRemoteByType("rune")
+          if r then fireRemote(r) end
+        end
+      end)
+    else
+      AS.AutoRuneMap=false TM.stop("AutoRuneMap")
+      log("符文全图吸取已关闭","warn")
+    end
+  end)
   toggle(t3,"自动Roll(眼睛/血统)",false,function(v)
     if v then
       AS.AutoRoll=true
@@ -1759,46 +1868,101 @@ local function buildMenu(sb,ct,gn)
     if v then
       AS.AutoPotion=true
       log("自动药水已启动","info")
-      TM.start("AutoPotion",2,function()
+      TM.start("AutoPotion",1.5,function()
         local used=false
+        -- 1. 先打开背包/库存界面
         pcall(function()
-          local backpack=LP:FindFirstChild("Backpack")
-          local char=LP.Character
-          for _,tool in pairs(backpack and backpack:GetChildren() or {}) do
-            if tool:IsA("Tool") then
-              local tn=string.lower(tool.Name)
-              if tn:find("potion",1,true) or tn:find("boost",1,true) or tn:find("buff",1,true) or tn:find("elixir",1,true) or tn:find("drink",1,true) or tn:find("flask",1,true) or tn:find("药水",1,true) then
-                pcall(function()
-                  local hum=char and char:FindFirstChildOfClass("Humanoid")
-                  if hum then
-                    tspawn(function()
-                      pcall(function()
-                        hum:EquipTool(tool)
-                        twait(0.1)
-                        tool:Activate()
-                      end)
+          local pg=LP:FindFirstChild("PlayerGui")
+          if pg then
+            -- 尝试点击背包/库存按钮打开界面
+            for _,b in pairs(pg:GetDescendants()) do
+              if (b:IsA("TextButton") or b:IsA("ImageButton")) and b.Visible~=false and b.Active~=false then
+                local bn=string.lower(b.Name)
+                local bt=b:IsA("TextButton") and string.lower(b.Text or "") or ""
+                if bn:find("inventory",1,true) or bn:find("backpack",1,true) or bn:find("bag",1,true) or bn:find("背包",1,true) or bn:find("库存",1,true) or bt:find("inventory",1,true) or bt:find("backpack",1,true) or bt:find("bag",1,true) or bt:find("背包",1,true) or bt:find("库存",1,true) then
+                  pcall(function()
+                    if fS then pcall(fS,b.Activated) pcall(fS,b.MouseButton1Click) end
+                    pcall(function() b:Activate() end)
+                    pcall(function()
+                      local cx=b.AbsolutePosition.X+b.AbsoluteSize.X/2
+                      local cy=b.AbsolutePosition.Y+b.AbsoluteSize.Y/2
+                      VIM:SendMouseButtonEvent(cx,cy,0,true,b,1)
+                      VIM:SendMouseButtonEvent(cx,cy,0,false,b,1)
                     end)
-                    used=true
-                    log("使用药水: "..tool.Name,"ok")
-                  end
-                end)
-              end
-            end
-          end
-          if char then
-            for _,tool in pairs(char:GetChildren()) do
-              if tool:IsA("Tool") then
-                pcall(function() tool:Activate() used=true end)
+                  end)
+                  break
+                end
               end
             end
           end
         end)
-        local r=findRemoteByType("potion")
-        if r then fireRemote(r) used=true end
-        clickBtn("use","drink","activate","potion","consume","buff")
+        twait(0.2)
+        -- 2. 在打开的界面内点击药水
+        pcall(function()
+          local pg=LP:FindFirstChild("PlayerGui")
+          if pg then
+            for _,b in pairs(pg:GetDescendants()) do
+              if (b:IsA("TextButton") or b:IsA("ImageButton")) and b.Visible~=false and b.Active~=false then
+                local bn=string.lower(b.Name)
+                local bt=b:IsA("TextButton") and string.lower(b.Text or "") or ""
+                -- 检测药水相关名称
+                local isPotion=bn:find("potion",1,true) or bn:find("boost",1,true) or bn:find("buff",1,true) or bn:find("elixir",1,true) or bn:find("drink",1,true) or bn:find("flask",1,true) or bn:find("药水",1,true) or bn:find("药",1,true) or bt:find("potion",1,true) or bt:find("药水",1,true) or bt:find("use",1,true) or bt:find("drink",1,true) or bt:find("consume",1,true) or bt:find("activate",1,true)
+                if isPotion then
+                  -- 排除关闭/返回按钮
+                  local skip=bn:find("close",1,true) or bn:find("exit",1,true) or bn:find("back",1,true) or bn:find("return",1,true) or bt:find("close",1,true) or bt:find("exit",1,true) or bt:find("返回",1,true) or bt:find("关闭",1,true)
+                  if not skip then
+                    pcall(function()
+                      if fS then pcall(fS,b.Activated) pcall(fS,b.MouseButton1Click) end
+                      pcall(function() b:Activate() end)
+                      pcall(function()
+                        local cx=b.AbsolutePosition.X+b.AbsoluteSize.X/2
+                        local cy=b.AbsolutePosition.Y+b.AbsoluteSize.Y/2
+                        VIM:SendMouseButtonEvent(cx,cy,0,true,b,1)
+                        VIM:SendMouseButtonEvent(cx,cy,0,false,b,1)
+                      end)
+                      used=true
+                      log("点击药水: "..b.Name,"ok")
+                    end)
+                  end
+                end
+              end
+            end
+          end
+        end)
+        -- 3. 备用: 尝试背包Tool
         if not used then
+          pcall(function()
+            local backpack=LP:FindFirstChild("Backpack")
+            local char=LP.Character
+            for _,tool in pairs(backpack and backpack:GetChildren() or {}) do
+              if tool:IsA("Tool") then
+                local tn=string.lower(tool.Name)
+                if tn:find("potion",1,true) or tn:find("boost",1,true) or tn:find("buff",1,true) or tn:find("药水",1,true) or tn:find("药",1,true) then
+                  pcall(function()
+                    local hum=char and char:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                      tspawn(function()
+                        pcall(function()
+                          hum:EquipTool(tool)
+                          twait(0.1)
+                          tool:Activate()
+                        end)
+                      end)
+                      used=true
+                      log("使用药水: "..tool.Name,"ok")
+                    end
+                  end)
+                end
+              end
+            end
+          end)
+        end
+        -- 4. 备用: Remote
+        if not used then
+          local r=findRemoteByType("potion")
+          if r then fireRemote(r) used=true end
           local r2=getRemoteFuzzy("usepotion","use_potion","drinkpotion","activatepotion","usebuff","use_buff")
-          if r2 then fireRemote(r2) end
+          if r2 then fireRemote(r2) used=true end
         end
       end)
     else
@@ -1936,7 +2100,7 @@ local function buildMenu(sb,ct,gn)
     end
     notif("已输出 "..c.." 个按钮到日志",C.Blue)
   end)
-  log("YPX v12.3 日志系统就绪","ok")
+  log("YPX v12.4 日志系统就绪","ok")
 end
 
 local TN={universal="通用模式",anime_incremental="Anime Inc."}
@@ -2061,8 +2225,12 @@ tspawn(function()
     end
   end)
 
+  -- 启动89R币弹窗拦截器
+  startBlock89R()
+  log("89R币弹窗拦截器已启动","info")
+
   -- 加载通知
-  local nt=ok and ("✅ "..(TN[gT] or "通用").."  v12.3") or "⚠️ 维护模式"
+  local nt=ok and ("✅ "..(TN[gT] or "通用").."  v12.4") or "⚠️ 维护模式"
   local nf=mk("TextLabel",{
     Parent=sg,BackgroundColor3=ok and C.BlueD or C.Orange,BorderSizePixel=0,
     Position=UDim2.new(0.5,-130,0,-40),Size=UDim2.new(0,260,0,34),
@@ -2077,13 +2245,13 @@ tspawn(function()
   end)
 
   print("═══════════════════════════════════")
-  print("  ✅ YPX v12.3 已加载!")
+  print("  ✅ YPX v12.4 已加载!")
   print("  游戏类型: "..(TN[gT] or "通用"))
   print("  游戏名称: "..tostring(gN))
   print("  PlaceId: "..tostring(pId))
   local rc2=0 for _ in pairs(remoteCache) do rc2=rc2+1 end
   print("  缓存: "..rc2.." Remote")
-  print("  引擎: 自动扫描 | ESP | 反挂机 | 性能监控 | 飞行 | 穿墙 | 升级树 | 日志")
+  print("  引擎: 自动扫描 | ESP | 反挂机 | 性能监控 | 飞行 | 穿墙 | 升级树 | 日志 | 符文吸取 | 89R拦截")
   print("  按 RightShift 或悬浮按钮 显示/隐藏")
   print("  日志在「日志」标签页查看")
   print("═══════════════════════════════════")
