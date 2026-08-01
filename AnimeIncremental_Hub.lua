@@ -1,5 +1,5 @@
 --[[
-    ypx Hub v10.5 © ypx
+    ypx Hub v10.6 © ypx
     黑曼巴 x 福瑞 结合体
     核心技术 (基于老外脚本深度学习, 不需要截图):
       1. 通用自动发现引擎: 扫描所有TouchTransmitter+ProximityPrompt+ClickDetector
@@ -11,9 +11,11 @@
       7. CharacterAdded重连 (老外技术)
       8. 全能自动模式: 一键扫描交互所有可交互物体
       9. 符文系统 (原卡牌): 全面改名+功能修复
-      10. 验证系统 + FPS监控 + UI模板技术
-      11. 日志系统: 扫描全game + 可交互物体扫描
-      12. Heartbeat引擎驱动所有循环
+      10. ESP透视引擎: BillboardGui+Highlight透视敌人/物品/玩家 (v10.6新引擎)
+      11. 反挂机引擎: VirtualUser+IdleTime重置防AFK踢出 (v10.6新引擎)
+      12. FPS监控 + UI模板技术
+      13. 日志系统: 扫描全game + 可交互物体扫描
+      14. Heartbeat引擎驱动所有循环
 ]]
 
 -- ==================== 服务 ====================
@@ -955,128 +957,184 @@ UserInputService.JumpRequest:Connect(function()
     end
 end)
 
--- ==================== 验证系统 ====================
-local isVerified = false
-local validKeys = {
-    ["ypx2026"] = true, ["blackmamba"] = true, ["furry"] = true,
-    ["mamba"] = true, ["ypx"] = true, ["hub"] = true,
-}
+-- ==================== ESP透视引擎 (v10.6 新引擎) ====================
+-- 老外技术: BillboardGui + Highlight 实现透视
+-- 功能: 敌人红色 / 物品绿色 / 玩家蓝色 / 宝箱金色
+local ESP = {}
+ESP.objects = {}
+ESP.conn = nil
+ESP.enabled = false
+ESP.settings = { enemies = true, items = true, players = true, distance = 500 }
 
--- 验证界面
-local function buildVerifyScreen(onSuccess)
-    local vscreen = make("Frame", {
-        Parent = sg, BackgroundColor3 = C.BG, BorderSizePixel = 0,
-        Size = UDim2.new(1, 0, 1, 0),
-    })
-    corner(vscreen, 0)
-    gradient(vscreen, C.BG, C.BG2, 90)
-
-    -- 中心面板
-    local panel = make("Frame", {
-        Parent = vscreen, BackgroundColor3 = C.Card, BorderSizePixel = 0,
-        Position = UDim2.new(0.5, -160, 0.5, -110), Size = UDim2.new(0, 320, 0, 220),
-    })
-    corner(panel, 14) stroke(panel, C.Blue, 1.5, 0.3)
-    gradient(panel, C.Card, C.CardH, 90)
-
-    -- Logo
-    make("TextLabel", {
-        Parent = panel, BackgroundTransparency = 1,
-        Position = UDim2.new(0, 0, 0, 15), Size = UDim2.new(1, 0, 0, 36),
-        Font = Enum.Font.GothamBold, Text = "🐍 ypx Hub v10.5", TextColor3 = C.White, TextSize = 22,
-    })
-    make("TextLabel", {
-        Parent = panel, BackgroundTransparency = 1,
-        Position = UDim2.new(0, 0, 0, 50), Size = UDim2.new(1, 0, 0, 18),
-        Font = Enum.Font.GothamSemibold, Text = "黑曼巴 x 福瑞 结合体", TextColor3 = C.Gold, TextSize = 12,
-    })
-    make("TextLabel", {
-        Parent = panel, BackgroundTransparency = 1,
-        Position = UDim2.new(0, 0, 0, 72), Size = UDim2.new(1, 0, 0, 16),
-        Font = Enum.Font.GothamSemibold, Text = "请输入验证密钥", TextColor3 = C.Gray, TextSize = 12,
-    })
-
-    -- 输入框
-    local inputBox = make("TextBox", {
-        Parent = panel, BackgroundColor3 = C.BG2, BorderSizePixel = 0,
-        Position = UDim2.new(0, 30, 0, 95), Size = UDim2.new(1, -60, 0, 36),
-        Font = Enum.Font.GothamSemibold, Text = "", PlaceholderText = "输入密钥...",
-        TextColor3 = C.White, PlaceholderColor3 = C.Gray, TextSize = 14,
-        ClearTextOnFocus = false,
-    })
-    corner(inputBox, 8) stroke(inputBox, C.Div, 1)
-
-    -- 验证按钮
-    local verifyBtn = make("TextButton", {
-        Parent = panel, BackgroundColor3 = C.BlueD, BorderSizePixel = 0,
-        Position = UDim2.new(0, 30, 0, 140), Size = UDim2.new(1, -60, 0, 36),
-        Font = Enum.Font.GothamBold, Text = "验证", TextColor3 = C.White, TextSize = 14,
-        AutoButtonColor = false,
-    })
-    corner(verifyBtn, 8) gradient(verifyBtn, C.BlueD, C.Blue, 90)
-
-    -- 状态
-    local statusLbl = make("TextLabel", {
-        Parent = panel, BackgroundTransparency = 1,
-        Position = UDim2.new(0, 0, 0, 182), Size = UDim2.new(1, 0, 0, 20),
-        Font = Enum.Font.GothamSemibold, Text = "", TextColor3 = C.Gray, TextSize = 11,
-    })
-
-    local function doVerify()
-        local key = string.lower(string.gsub(inputBox.Text or "", "%s", ""))
-        if key == "" then
-            statusLbl.Text = "请输入密钥"
-            statusLbl.TextColor3 = C.Orange
-            return
-        end
-        if validKeys[key] then
-            statusLbl.Text = "✅ 验证成功!"
-            statusLbl.TextColor3 = C.Green
-            isVerified = true
-            tw(verifyBtn, {BackgroundColor3 = C.Green}, 0.15)
-            tdelay(0.8, function()
-                tw(vscreen, {BackgroundTransparency = 1}, 0.3)
-                for _, c in pairs(vscreen:GetDescendants()) do
-                    if c:IsA("TextLabel") or c:IsA("TextButton") or c:IsA("TextBox") then
-                        tw(c, {TextTransparency = 1, BackgroundTransparency = 1}, 0.3)
-                    end
-                end
-                tdelay(0.35, function() vscreen:Destroy() end)
-                if onSuccess then onSuccess() end
-            end)
-        else
-            statusLbl.Text = "❌ 密钥无效, 请重试"
-            statusLbl.TextColor3 = C.Red
-            tw(inputBox, {BackgroundColor3 = C.Red}, 0.1)
-            tdelay(0.3, function() tw(inputBox, {BackgroundColor3 = C.BG2}, 0.2) end)
-        end
+function ESP.add(part, color, label, dist)
+    if not part or not part.Parent then return end
+    -- 避免重复添加
+    for _, o in pairs(ESP.objects) do
+        if o.Adornee == part then return end
     end
 
-    verifyBtn.MouseButton1Click:Connect(doVerify)
-    inputBox.FocusLost:Connect(function(enter) if enter then doVerify() end end)
+    local esp = Instance.new("BillboardGui")
+    esp.Name = "ypxESP"
+    esp.Adornee = part
+    esp.Size = UDim2.new(0, 100, 0, 20)
+    esp.StudsOffset = Vector3.new(0, 3, 0)
+    esp.AlwaysOnTop = true
+    esp.Parent = sg
 
-    -- 跳过按钮 (调试用, 3秒后显示)
-    tdelay(3, function()
-        if vscreen and vscreen.Parent then
-            local skipBtn = make("TextButton", {
-                Parent = panel, BackgroundTransparency = 1,
-                Position = UDim2.new(1, -50, 0, 5), Size = UDim2.new(0, 40, 0, 16),
-                Font = Enum.Font.GothamSemibold, Text = "跳过→", TextColor3 = C.Gray, TextSize = 10,
-                AutoButtonColor = false,
-            })
-            skipBtn.MouseButton1Click:Connect(function()
-                isVerified = true
-                tw(vscreen, {BackgroundTransparency = 1}, 0.3)
-                for _, c in pairs(vscreen:GetDescendants()) do
-                    if c:IsA("TextLabel") or c:IsA("TextButton") or c:IsA("TextBox") then
-                        tw(c, {TextTransparency = 1, BackgroundTransparency = 1}, 0.3)
+    local bg = Instance.new("Frame", esp)
+    bg.Size = UDim2.new(1, 0, 1, 0)
+    bg.BackgroundColor3 = color
+    bg.BackgroundTransparency = 0.4
+    corner(bg, 6)
+
+    local lbl = Instance.new("TextLabel", esp)
+    lbl.Size = UDim2.new(1, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Font = Enum.Font.GothamBold
+    lbl.Text = label or part.Name
+    lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    lbl.TextStrokeTransparency = 0
+    lbl.TextSize = 10
+
+    -- 添加Highlight (老外技术)
+    local hl = nil
+    pcall(function()
+        hl = Instance.new("Highlight")
+        hl.Name = "ypxESPHL"
+        hl.Adornee = part
+        hl.FillColor = color
+        hl.FillTransparency = 0.7
+        hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+        hl.OutlineTransparency = 0.2
+        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        hl.Parent = sg
+    end)
+
+    table.insert(ESP.objects, { gui = esp, highlight = hl, Adornee = part, color = color, label = label })
+end
+
+function ESP.clear()
+    for _, o in pairs(ESP.objects) do
+        pcall(function() o.gui:Destroy() end)
+        pcall(function() if o.highlight then o.highlight:Destroy() end end)
+    end
+    ESP.objects = {}
+end
+
+function ESP.start()
+    ESP.stop()
+    ESP.enabled = true
+    ESP.conn = RunService.Heartbeat:Connect(function()
+        -- 清理无效对象
+        for i = #ESP.objects, 1, -1 do
+            local o = ESP.objects[i]
+            if not o.Adornee or not o.Adornee.Parent then
+                pcall(function() o.gui:Destroy() end)
+                pcall(function() if o.highlight then o.highlight:Destroy() end end)
+                table.remove(ESP.objects, i)
+            end
+        end
+
+        local root = getRoot()
+        if not root then return end
+
+        -- 扫描敌人
+        if ESP.settings.enemies then
+            local enemies = findObjects({"enemy", "mob", "npc", "boss", "monster", "怪", "敌人", "target"})
+            for _, e in pairs(enemies) do
+                if e:IsA("BasePart") or e:IsA("Model") then
+                    local part = e:IsA("Model") and (e:FindFirstChild("HumanoidRootPart") or e.PrimaryPart) or e
+                    if part and part.Parent then
+                        local dist = (part.Position - root.Position).Magnitude
+                        if dist <= ESP.settings.distance then
+                            ESP.add(part, Color3.fromRGB(255, 50, 50), "敌人 " .. math.floor(dist) .. "m")
+                        end
                     end
                 end
-                tdelay(0.35, function() vscreen:Destroy() end)
-                if onSuccess then onSuccess() end
-            end)
+            end
+        end
+
+        -- 扫描物品/宝箱
+        if ESP.settings.items then
+            local items = findObjects({"chest", "宝箱", "reward", "drop", "pickup", "loot", "item", "物品", "coin", "gem"})
+            for _, i in pairs(items) do
+                if i:IsA("BasePart") then
+                    local dist = (i.Position - root.Position).Magnitude
+                    if dist <= ESP.settings.distance then
+                        ESP.add(i, Color3.fromRGB(50, 255, 50), "物品 " .. math.floor(dist) .. "m")
+                    end
+                end
+            end
+        end
+
+        -- 扫描玩家
+        if ESP.settings.players then
+            for _, p in pairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and p.Character then
+                    local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        local dist = (hrp.Position - root.Position).Magnitude
+                        if dist <= ESP.settings.distance then
+                            ESP.add(hrp, Color3.fromRGB(50, 150, 255), p.Name .. " " .. math.floor(dist) .. "m")
+                        end
+                    end
+                end
+            end
         end
     end)
+end
+
+function ESP.stop()
+    ESP.enabled = false
+    if ESP.conn then
+        ESP.conn:Disconnect()
+        ESP.conn = nil
+    end
+    ESP.clear()
+end
+
+-- ==================== 反挂机引擎 (Anti-AFK v10.6 新引擎) ====================
+-- 老外技术: VirtualUser + IdleTime重置
+-- 功能: 自动防踢, 模拟输入, 保持在线
+local AntiAFK = {}
+AntiAFK.enabled = false
+
+function AntiAFK.start()
+    AntiAFK.stop()
+    AntiAFK.enabled = true
+
+    -- 方式1: 拦截IdleTimeout (老外核心技术)
+    pcall(function()
+        LocalPlayer.Idled:Connect(function()
+            pcall(function()
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+            end)
+        end)
+    end)
+
+    -- 方式2: 定期模拟按键 (双重保险)
+    TaskManager.start("AntiAFK", 30, function()
+        pcall(function()
+            -- 模拟微小移动防止超时
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+        -- 备用: 模拟按键
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+            task.wait(0.05)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+        end)
+    end)
+
+    showNotif("反挂机已启动", C.Green)
+end
+
+function AntiAFK.stop()
+    AntiAFK.enabled = false
+    TaskManager.stop("AntiAFK")
 end
 
 -- ==================== 加载界面 ====================
@@ -1086,7 +1144,7 @@ gradient(loadScreen, C.BG, C.BG2, 90)
 
 local titleL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 0), Size = UDim2.new(0, 240, 0, 46), Font = Enum.Font.GothamBold, Text = "ypx Hub", TextColor3 = C.White, TextSize = 28 })
 stroke(titleL, C.Blue, 1.5, 0.3)
-local subL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 50), Size = UDim2.new(0, 240, 0, 18), Font = Enum.Font.GothamSemibold, Text = "© ypx  ·  v10.5 黑曼巴x福瑞", TextColor3 = C.Gold, TextSize = 13 })
+local subL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 50), Size = UDim2.new(0, 240, 0, 18), Font = Enum.Font.GothamSemibold, Text = "© ypx  ·  v10.6 黑曼巴x福瑞", TextColor3 = C.Gold, TextSize = 13 })
 local statusText = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -140, 0.46, 10), Size = UDim2.new(0, 280, 0, 22), Font = Enum.Font.GothamSemibold, Text = "正在初始化...", TextColor3 = C.Gray, TextSize = 13 })
 local countdownText = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -140, 0.46, 36), Size = UDim2.new(0, 280, 0, 30), Font = Enum.Font.GothamBold, Text = "3", TextColor3 = C.BlueL, TextSize = 24 })
 local barBg = make("Frame", { Parent = loadScreen, BackgroundColor3 = C.Track, BorderSizePixel = 0, Position = UDim2.new(0.5, -130, 0.46, 74), Size = UDim2.new(0, 260, 0, 6) })
@@ -1572,7 +1630,7 @@ local function buildMaintenanceTab(sidebar, content)
     end)
 
     label(tm, "—— 运行状态 ——")
-    local sl = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 28), Font = Enum.Font.GothamSemibold, Text = "  ✅ v10.5 Heartbeat引擎运行中", TextColor3 = C.Green, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left })
+    local sl = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 28), Font = Enum.Font.GothamSemibold, Text = "  ✅ v10.6 Heartbeat引擎运行中", TextColor3 = C.Green, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left })
     corner(sl, 8) stroke(sl, C.Div, 1)
 
     label(tm, "—— 紧急操作 ——")
@@ -1800,7 +1858,7 @@ local function buildMaintenanceTab(sidebar, content)
     end)
 
     label(tm, "—— 关于 ——")
-    local ab = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 60), Font = Enum.Font.GothamSemibold, Text = "  ypx Hub v10.5 © ypx\n  黑曼巴 x 福瑞 结合体\n  通用自动发现引擎 · 不需要截图\n  TouchTransmitter+ProximityPrompt+ClickDetector+Remote自动发现", TextColor3 = C.Gray, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top })
+    local ab = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 60), Font = Enum.Font.GothamSemibold, Text = "  ypx Hub v10.6 © ypx\n  黑曼巴 x 福瑞 结合体\n  通用自动发现引擎 · 不需要截图\n  ESP透视+反挂机+TouchTransmitter+ProximityPrompt+ClickDetector+Remote自动发现", TextColor3 = C.Gray, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top })
     corner(ab, 8) stroke(ab, C.Div, 1)
 end
 
@@ -1909,6 +1967,23 @@ local function buildUniversalMenu(sidebar, content, gameName)
             end
         end)
         showNotif("已清理 " .. cnt .. " 个特效", C.Purple)
+    end)
+
+    -- ESP透视引擎 (v10.6新引擎)
+    label(tv, "—— ESP透视引擎 ——")
+    toggle(tv, "ESP总开关", false, function(v)
+        if v then ESP.start() else ESP.stop() end
+    end)
+    toggle(tv, "敌人透视(红)", true, function(v) ESP.settings.enemies = v end)
+    toggle(tv, "物品透视(绿)", true, function(v) ESP.settings.items = v end)
+    toggle(tv, "玩家透视(蓝)", true, function(v) ESP.settings.players = v end)
+    slider(tv, "ESP距离", 100, 2000, 500, function(v) ESP.settings.distance = v end)
+    button(tv, "清除ESP标记", function() ESP.clear() showNotif("ESP已清除", C.Purple) end)
+
+    -- 反挂机引擎 (v10.6新引擎)
+    label(tv, "—— 反挂机引擎 ——")
+    toggle(tv, "反挂机(防AFK踢出)", false, function(v)
+        if v then AntiAFK.start() else AntiAFK.stop() showNotif("反挂机已关闭", C.Orange) end
     end)
 
     buildMaintenanceTab(sidebar, content)
@@ -2152,6 +2227,23 @@ local function buildAnimeMenu(sidebar, content, gameName)
         showNotif("已清理 " .. cnt .. " 个特效", C.Purple)
     end)
 
+    -- ESP透视引擎 (v10.6新引擎)
+    label(t7, "—— ESP透视引擎 ——")
+    toggle(t7, "ESP总开关", false, function(v)
+        if v then ESP.start() else ESP.stop() end
+    end)
+    toggle(t7, "敌人透视(红)", true, function(v) ESP.settings.enemies = v end)
+    toggle(t7, "物品透视(绿)", true, function(v) ESP.settings.items = v end)
+    toggle(t7, "玩家透视(蓝)", true, function(v) ESP.settings.players = v end)
+    slider(t7, "ESP距离", 100, 2000, 500, function(v) ESP.settings.distance = v end)
+    button(t7, "清除ESP标记", function() ESP.clear() showNotif("ESP已清除", C.Purple) end)
+
+    -- 反挂机引擎 (v10.6新引擎)
+    label(t7, "—— 反挂机引擎 ——")
+    toggle(t7, "反挂机(防AFK踢出)", false, function(v)
+        if v then AntiAFK.start() else AntiAFK.stop() showNotif("反挂机已关闭", C.Orange) end
+    end)
+
     buildMaintenanceTab(sidebar, content)
 end
 
@@ -2241,11 +2333,8 @@ tspawn(function()
     twait(0.35)
     pcall(function() loadScreen:Destroy() end)
 
-    -- 验证系统
-    buildVerifyScreen(function()
-        -- 验证成功后显示主窗口
-        if main then main.Visible = true end
-    end)
+    -- 直接显示主窗口 (v10.6: 移除验证系统, 修复Delta SCAM检测)
+    if main then main.Visible = true end
 
     -- 悬浮按钮
     local floatBtn = make("TextButton", {
@@ -2290,7 +2379,7 @@ tspawn(function()
     end)
 
     -- 加载通知
-    local nt = loadOk and ("✅ " .. (TypeNames[gameType] or "通用") .. "  ·  v10.5 © ypx") or "⚠️ 维护模式  ·  © ypx"
+    local nt = loadOk and ("✅ " .. (TypeNames[gameType] or "通用") .. "  ·  v10.6 © ypx") or "⚠️ 维护模式  ·  © ypx"
     local notif = make("TextLabel", {
         Parent = sg, BackgroundColor3 = loadOk and C.BlueD or C.Orange, BorderSizePixel = 0,
         Position = UDim2.new(0.5, -130, 0, -40), Size = UDim2.new(0, 260, 0, 34),
@@ -2308,7 +2397,7 @@ tspawn(function()
     print("═══════════════════════════════════")
     local rCount = 0 for _ in pairs(remoteCache) do rCount = rCount + 1 end
     local btnCount = 0 for _ in pairs(buttonCache) do btnCount = btnCount + 1 end
-    print("  ✅ ypx Hub v10.5 已加载!")
+    print("  ✅ ypx Hub v10.6 已加载!")
     print("  黑曼巴 x 福瑞 结合体")
     print("  游戏类型: " .. (TypeNames[gameType] or "通用"))
     print("  游戏名称: " .. tostring(gameName))
@@ -2316,7 +2405,8 @@ tspawn(function()
     print("  缓存: " .. rCount .. " Remote (全game) · " .. btnCount .. " 按钮")
     print("  核心引擎: 通用自动发现(TouchTransmitter+ProximityPrompt+ClickDetector+Remote) + Heartbeat")
     print("  老外技术: firetouchinterest重试 + ProximityPromptService绕过 + Remote正则匹配 + delta检测")
-    print("  验证系统: ✅ | FPS监控: ✅ | UI模板: ✅ | leaderstats自动发现: ✅")
+    print("  新引擎: ESP透视(BillboardGui+Highlight) | 反挂机(VirtualUser+IdleTime)")
+    print("  FPS监控: ✅ | UI模板: ✅ | leaderstats自动发现: ✅ | ESP: ✅ | 反挂机: ✅")
     print("  按 RightShift 或悬浮按钮 显示/隐藏")
     print("  © 2026 ypx")
     print("═══════════════════════════════════")
