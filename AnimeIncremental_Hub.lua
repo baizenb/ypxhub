@@ -23,6 +23,38 @@
       - 正常脚本不需要拦截踢出, 删掉反而安全
 ]]
 
+-- ==================== 调试输出 (最先执行, 验证脚本已加载) ====================
+local _dbg = game:GetService("CoreGui")
+local _dp = game:GetService("Players").LocalPlayer
+local _dg = Instance.new("ScreenGui")
+_dg.Name = "ypxDebug"
+_dg.ResetOnSpawn = false
+_dg.IgnoreGuiInset = true
+_dg.DisplayOrder = 99999
+pcall(function() _dg.Parent = _dbg end)
+if not _dg.Parent then _dg.Parent = _dp:WaitForChild("PlayerGui") end
+local _df = Instance.new("TextLabel")
+_df.Size = UDim2.new(0, 300, 0, 80)
+_df.Position = UDim2.new(0, 10, 0, 10)
+_df.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
+_df.TextColor3 = Color3.fromRGB(0, 255, 0)
+_df.Font = Enum.Font.Code
+_df.TextSize = 11
+_df.TextWrapped = true
+_df.TextXAlignment = Enum.TextXAlignment.Left
+_df.TextYAlignment = Enum.TextYAlignment.Top
+_df.Text = "[1/5] 脚本已加载..."
+_df.Parent = _dg
+Instance.new("UICorner", _df).CornerRadius = UDim.new(0, 8)
+local function _dbgLog(msg)
+    pcall(function()
+        if _df and _df.Parent then
+            _df.Text = _df.Text .. "\n" .. msg
+        end
+        print("[YPX-DBG] " .. msg)
+    end)
+end
+
 -- ==================== 服务 ====================
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -49,6 +81,7 @@ end
 
 local guiParent = getGuiParent()
 pcall(function() local o = guiParent:FindFirstChild("ypxHub") if o then o:Destroy() end end)
+_dbgLog("[2/5] 服务和工具初始化完成")
 
 -- 安全检测可用函数 (直接pcall, 不混淆)
 local fnT, fnP, fnC, fnS
@@ -801,6 +834,7 @@ local sg = make("ScreenGui", {
     Name = "ypxHub", Parent = guiParent, ResetOnSpawn = false,
     IgnoreGuiInset = true, DisplayOrder = 9999,
 })
+_dbgLog("[3/5] ScreenGui创建完成")
 
 -- ==================== 飞行悬浮面板 ====================
 local flyPanel = make("Frame", {
@@ -2313,6 +2347,7 @@ tspawn(function()
     local main, sidebar, content
     local loadOk, loadErr
 
+    _dbgLog("[4/5] 主加载流程启动")
     loadOk, loadErr = pcall(function()
         statusText.Text = "正在初始化..." twait(0.3)
         tw(barFill, {Size = UDim2.new(0, 60, 1, 0)}, 0.2)
@@ -2365,6 +2400,8 @@ tspawn(function()
 
     if not loadOk then
         print("[ypx Error] " .. tostring(loadErr))
+        _dbgLog("[ERR] 初始化失败: " .. tostring(loadErr))
+        _dbgLog("[ERR] 尝试维护模式...")
         pcall(function()
             gameType = "universal"
             gameName = "错误恢复"
@@ -2376,6 +2413,8 @@ tspawn(function()
             statusText.Text = "维护模式启动"
             gameNameText.Text = gameName or "未知"
         end)
+    else
+        _dbgLog("[5/5] 加载完成!")
     end
 
     -- 淡出加载界面
@@ -2468,4 +2507,15 @@ tspawn(function()
     print("  FPS监控: ✅ | UI模板: ✅ | leaderstats自动发现: ✅ | ESP: ✅ | 反挂机: ✅")
     print("  按 RightShift 或悬浮按钮 显示/隐藏")
     print("═══════════════════════════════════")
+
+    -- 5秒后自动隐藏调试面板
+    tdelay(5, function()
+        pcall(function()
+            if _dg then
+                local tw2 = TweenService:Create
+                tw2(_df, TweenInfo.new(0.5), {TextTransparency = 1, BackgroundTransparency = 1}):Play()
+                tdelay(0.6, function() pcall(function() _dg:Destroy() end) end)
+            end
+        end)
+    end)
 end)
