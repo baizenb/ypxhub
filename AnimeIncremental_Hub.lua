@@ -1,5 +1,5 @@
 --[[
-    YPX v10.8
+    YPX v11.0 — 干净模式
     核心技术 (自动检测, 不需要截图):
       1. 通用自动发现引擎: 扫描所有可交互物体
       2. 全局绕过长按等待
@@ -10,12 +10,17 @@
       7. CharacterAdded重连
       8. 全能自动模式: 一键扫描交互所有可交互物体
       9. 符文系统: 全面改名+功能修复
-      10. ESP透视引擎: 透视敌人/物品/玩家 (v10.6新引擎)
-      11. 反挂机引擎: 防AFK踢出 (v10.6新引擎)
-      12. 性能监控引擎: FPS监控+自动降级保护 (v10.8新引擎)
+      10. ESP透视引擎: 透视敌人/物品/玩家
+      11. 反挂机引擎: 防AFK踢出
+      12. 性能监控引擎: FPS监控+自动降级保护
       13. FPS监控 + UI模板技术
       14. 日志系统: 扫描全game + 可交互物体扫描
       15. Heartbeat引擎驱动所有循环
+
+    v11.0 关键变更: 移除全部反检测/反踢出代码
+      - 删除 Anti-Block 引擎 (hook Kick / hookmetamethod / hookfunction)
+      - 这些函数是 SCAM 检测的第一触发源
+      - 正常脚本不需要拦截踢出, 删掉反而安全
 ]]
 
 -- ==================== 服务 ====================
@@ -45,15 +50,12 @@ end
 local guiParent = getGuiParent()
 pcall(function() local o = guiParent:FindFirstChild("ypxHub") if o then o:Destroy() end end)
 
--- 安全函数引用 (字符串拼接避免关键词检测)
-local _t = "fi".."re".."touch".."interest"
-local _p = "fi".."re".."proximity".."prompt"
-local _c = "fi".."re".."click".."detector"
-local _s = "fi".."re".."signal"
-local fnT = _G[_t]
-local fnP = _G[_p]
-local fnC = _G[_c]
-local fnS = _G[_s]
+-- 安全检测可用函数 (直接pcall, 不混淆)
+local fnT, fnP, fnC, fnS
+pcall(function() fnT = firetouchinterest end)
+pcall(function() fnP = fireproximityprompt end)
+pcall(function() fnC = fireclickdetector end)
+pcall(function() fnS = firesignal end)
 
 -- ==================== 颜色主题 (UI模板) ====================
 local C = {
