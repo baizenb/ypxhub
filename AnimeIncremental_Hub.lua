@@ -1,13 +1,16 @@
 --[[
-    ypx Hub v7.0 © ypx
-    完全重写 - 基于rscripts.net真实脚本模式
-    核心改变:
-      1. 自动训练 = VirtualInputManager模拟点击 + GUI按钮点击 (不盲发Remote)
-      2. 自动农场 = CFrame传送到NPC身边 (不盲发Remote)
-      3. 自动商店/重生 = 找到真实GUI按钮点击 (不盲发Remote)
-      4. 自动宝箱 = 扫描Workspace传送 (不盲发Remote)
-      5. 所有循环间隔 ≥ 0.5秒, 彻底消除卡顿
-      6. 只扫ReplicatedStorage+Workspace, 不扫game:GetDescendants()
+    ypx Hub v8.0 © ypx
+    基于rscripts.net/scriptblox.com老外脚本模式深度学习重写
+    核心升级:
+      1. 全部 while 循环改为 RunService.Heartbeat 驱动 (丝滑无卡顿)
+      2. 自动农场加入 Highlight 高亮 + BillboardGui 目标标记 (视觉反馈)
+      3. NPC检测加入目标缓存, 避免每帧重复扫描
+      4. 统一任务管理器 TaskManager, 一键停止所有循环
+      5. 自动训练 = VirtualInputManager模拟点击 + GUI按钮点击 (不盲发Remote)
+      6. 自动农场 = CFrame传送到NPC身边 (不盲发Remote)
+      7. 自动商店/重生 = 找到真实GUI按钮点击 (不盲发Remote)
+      8. 自动宝箱 = 扫描Workspace传送 (不盲发Remote)
+      9. 只扫ReplicatedStorage+Workspace, 不扫game:GetDescendants()
 ]]
 
 -- ==================== 服务 ====================
@@ -282,10 +285,21 @@ local function clickButton(kw)
     return found
 end
 
--- 找最近的NPC/敌人 (用于自动农场传送)
+-- 找最近的NPC/敌人 (用于自动农场传送) - 带目标缓存
+-- 老外脚本优化: 缓存上次目标, 避免每帧全量扫描
+local targetCache = { part = nil, expire = 0 }
 local function findNearestEnemy()
     local root = getRoot()
     if not root then return nil end
+    -- 缓存有效: 上次目标还在且活着, 直接返回
+    local now = os.clock()
+    if targetCache.part and targetCache.part.Parent and now < targetCache.expire then
+        local hum = targetCache.part.Parent:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 then
+            return targetCache.part
+        end
+    end
+    -- 缓存失效, 重新扫描
     local nearest, nearestDist = nil, math.huge
     pcall(function()
         for _, folder in pairs(Workspace:GetChildren()) do
@@ -305,6 +319,13 @@ local function findNearestEnemy()
             end
         end
     end)
+    -- 更新缓存 (1秒有效)
+    if nearest then
+        targetCache.part = nearest
+        targetCache.expire = now + 1
+    else
+        targetCache.part = nil
+    end
     return nearest
 end
 
@@ -329,6 +350,103 @@ end
 local allConns = {}
 local function trackConn(c) table.insert(allConns, c) return c end
 local function stopAllConns() for _, c in pairs(allConns) do pcall(function() c:Disconnect() end) end allConns = {} end
+
+-- ==================== Heartbeat 任务管理器 (替代所有 while 循环) ====================
+-- 老外脚本核心模式: 用 RunService.Heartbeat 驱动定时任务, 不用 while+wait
+local TaskManager = {}
+TaskManager.tasks = {}
+TaskManager.conn = nil
+
+function TaskManager.start(name, interval, callback)
+    TaskManager.stop(name)
+    TaskManager.tasks[name] = {
+        interval = interval,
+        callback = callback,
+        accumulator = 0,
+        active = true,
+    }
+    if not TaskManager.conn then
+        TaskManager.conn = RunService.Heartbeat:Connect(function(dt)
+            for n, t in pairs(TaskManager.tasks) do
+                if t.active then
+                    t.accumulator = t.accumulator + dt
+                    if t.accumulator >= t.interval then
+                        t.accumulator = 0
+                        pcall(t.callback)
+                    end
+                end
+            end
+        end)
+    end
+end
+
+function TaskManager.stop(name)
+    if TaskManager.tasks[name] then
+        TaskManager.tasks[name] = nil
+    end
+end
+
+function TaskManager.stopAll()
+    for n in pairs(TaskManager.tasks) do
+        TaskManager.tasks[n] = nil
+    end
+    if TaskManager.conn then
+        TaskManager.conn:Disconnect()
+        TaskManager.conn = nil
+    end
+end
+
+-- ==================== 视觉反馈系统 (Highlight + BillboardGui) ====================
+-- 老外脚本特色: 给目标加高亮和头顶标记, 让用户看到脚本在工作
+local VisualFX = {}
+VisualFX.highlight = nil
+VisualFX.billboard = nil
+
+function VisualFX.highlightTarget(part)
+    VisualFX.clear()
+    if not part then return end
+    pcall(function()
+        -- Highlight 高亮轮廓
+        VisualFX.highlight = Instance.new("Highlight")
+        VisualFX.highlight.Name = "ypxHighlight"
+        VisualFX.highlight.Adornee = part
+        VisualFX.highlight.FillColor = Color3.fromRGB(255, 50, 50)
+        VisualFX.highlight.FillTransparency = 0.6
+        VisualFX.highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
+        VisualFX.highlight.OutlineTransparency = 0
+        VisualFX.highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        VisualFX.highlight.Parent = part
+
+        -- BillboardGui 头顶标记
+        VisualFX.billboard = Instance.new("BillboardGui")
+        VisualFX.billboard.Name = "ypxTarget"
+        VisualFX.billboard.Adornee = part
+        VisualFX.billboard.Size = UDim2.new(0, 120, 0, 28)
+        VisualFX.billboard.StudsOffset = Vector3.new(0, 4, 0)
+        VisualFX.billboard.AlwaysOnTop = true
+        VisualFX.billboard.Parent = part
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, 0, 1, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Font = Enum.Font.GothamBold
+        lbl.Text = "🎯 TARGET"
+        lbl.TextColor3 = Color3.fromRGB(255, 255, 0)
+        lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        lbl.TextStrokeTransparency = 0
+        lbl.TextSize = 14
+        lbl.Parent = VisualFX.billboard
+    end)
+end
+
+function VisualFX.clear()
+    pcall(function()
+        if VisualFX.highlight then VisualFX.highlight:Destroy() end
+        if VisualFX.billboard then VisualFX.billboard:Destroy() end
+    end)
+    VisualFX.highlight = nil
+    VisualFX.billboard = nil
+end
 
 -- ==================== 状态变量 ====================
 local Flags = {}
@@ -401,6 +519,7 @@ function stopFly()
     flyState = false
     Flags.Fly = false
     flyUp = false flyDown = false
+    TaskManager.stop("Fly")
     pcall(function()
         local h = getHum() if h then h.PlatformStand = false end
         local r = getRoot()
@@ -419,53 +538,39 @@ end
 function startFly()
     if flyState then return end
     flyState = true Flags.Fly = true flyPanel.Visible = true
-    tspawn(function()
-        local root = getRoot()
-        local hum = getHum()
-        if not root or not hum then flyState = false flyPanel.Visible = false return end
-        root.CFrame = root.CFrame + Vector3.new(0, 5, 0)
-        hum.PlatformStand = true
-        local bv = make("BodyVelocity", { Name = "ypxFlyBV", MaxForce = Vector3.new(9e9, 9e9, 9e9), Velocity = Vector3.new(0, 0, 0), Parent = root })
-        local bg = make("BodyGyro", { Name = "ypxFlyBG", MaxTorque = Vector3.new(9e9, 9e9, 9e9), P = 10000, CFrame = root.CFrame, Parent = root })
-        while flyState do
-            root = getRoot() hum = getHum()
-            if not root or not hum then break end
-            if not root:FindFirstChild("ypxFlyBV") then
-                bv = make("BodyVelocity", { Name = "ypxFlyBV", MaxForce = Vector3.new(9e9, 9e9, 9e9), Velocity = Vector3.new(0, 0, 0), Parent = root })
-                bg = make("BodyGyro", { Name = "ypxFlyBG", MaxTorque = Vector3.new(9e9, 9e9, 9e9), P = 10000, CFrame = root.CFrame, Parent = root })
-            end
-            hum.PlatformStand = true
-            local cam = Workspace.CurrentCamera
-            if cam then
-                local moveDir = hum.MoveDirection
-                local target = Vector3.new(0, 0, 0)
-                if moveDir.Magnitude > 0.1 then
-                    target = target + Vector3.new(moveDir.X, 0, moveDir.Z) * flySpeed
-                end
-                if flyUp or UserInputService:IsKeyDown(Enum.KeyCode.Space) then
-                    target = target + Vector3.new(0, flySpeed, 0)
-                end
-                if flyDown or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
-                    target = target - Vector3.new(0, flySpeed, 0)
-                end
-                flyVel = flyVel:Lerp(target, 0.12)
-                bv.Velocity = flyVel
-                bg.CFrame = cam.CFrame
-            end
-            twait(0.02)
+    local root = getRoot()
+    local hum = getHum()
+    if not root or not hum then flyState = false flyPanel.Visible = false return end
+    root.CFrame = root.CFrame + Vector3.new(0, 5, 0)
+    hum.PlatformStand = true
+    local bv = make("BodyVelocity", { Name = "ypxFlyBV", MaxForce = Vector3.new(9e9, 9e9, 9e9), Velocity = Vector3.new(0, 0, 0), Parent = root })
+    local bg = make("BodyGyro", { Name = "ypxFlyBG", MaxTorque = Vector3.new(9e9, 9e9, 9e9), P = 10000, CFrame = root.CFrame, Parent = root })
+    -- Heartbeat 驱动飞行 (替代 while 循环)
+    TaskManager.start("Fly", 0.02, function()
+        root = getRoot() hum = getHum()
+        if not root or not hum then flyState = false flyPanel.Visible = false TaskManager.stop("Fly") return end
+        if not root:FindFirstChild("ypxFlyBV") then
+            bv = make("BodyVelocity", { Name = "ypxFlyBV", MaxForce = Vector3.new(9e9, 9e9, 9e9), Velocity = Vector3.new(0, 0, 0), Parent = root })
+            bg = make("BodyGyro", { Name = "ypxFlyBG", MaxTorque = Vector3.new(9e9, 9e9, 9e9), P = 10000, CFrame = root.CFrame, Parent = root })
         end
-        pcall(function()
-            if hum then hum.PlatformStand = false end
-            if root then
-                for _, o in pairs(root:GetChildren()) do
-                    if o:IsA("BodyVelocity") or o:IsA("BodyGyro") or o.Name == "ypxFlyBV" or o.Name == "ypxFlyBG" then
-                        o:Destroy()
-                    end
-                end
+        hum.PlatformStand = true
+        local cam = Workspace.CurrentCamera
+        if cam then
+            local moveDir = hum.MoveDirection
+            local target = Vector3.new(0, 0, 0)
+            if moveDir.Magnitude > 0.1 then
+                target = target + Vector3.new(moveDir.X, 0, moveDir.Z) * flySpeed
             end
-        end)
-        flyVel = Vector3.new(0, 0, 0)
-        flyPanel.Visible = false
+            if flyUp or UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+                target = target + Vector3.new(0, flySpeed, 0)
+            end
+            if flyDown or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+                target = target - Vector3.new(0, flySpeed, 0)
+            end
+            flyVel = flyVel:Lerp(target, 0.12)
+            bv.Velocity = flyVel
+            bg.CFrame = cam.CFrame
+        end
     end)
 end
 
@@ -499,20 +604,16 @@ local function setNoclip(on)
     end
 end
 
--- ==================== 加速系统 ====================
+-- ==================== 加速系统 (Heartbeat 驱动) ====================
 local function setWalkSpeed(on, speed)
     wsActive = on wsSpeed = speed
     if on then
-        tspawn(function()
-            while wsActive do
-                local h = getHum()
-                if h then h.WalkSpeed = wsSpeed end
-                twait(0.3)
-            end
+        TaskManager.start("WalkSpeed", 0.3, function()
             local h = getHum()
-            if h then h.WalkSpeed = 16 end
+            if h then h.WalkSpeed = wsSpeed end
         end)
     else
+        TaskManager.stop("WalkSpeed")
         local h = getHum()
         if h then h.WalkSpeed = 16 end
     end
@@ -536,7 +637,7 @@ gradient(loadScreen, C.BG, C.BG2, 90)
 
 local titleL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 0), Size = UDim2.new(0, 240, 0, 46), Font = Enum.Font.GothamBold, Text = "ypx Hub", TextColor3 = C.White, TextSize = 28 })
 stroke(titleL, C.Blue, 1.5, 0.3)
-local subL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 50), Size = UDim2.new(0, 240, 0, 18), Font = Enum.Font.GothamSemibold, Text = "© ypx  ·  v7.0 真实模式", TextColor3 = C.Gold, TextSize = 13 })
+local subL = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -120, 0.3, 50), Size = UDim2.new(0, 240, 0, 18), Font = Enum.Font.GothamSemibold, Text = "© ypx  ·  v8.0 Heartbeat引擎", TextColor3 = C.Gold, TextSize = 13 })
 local statusText = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -140, 0.46, 10), Size = UDim2.new(0, 280, 0, 22), Font = Enum.Font.GothamSemibold, Text = "正在初始化...", TextColor3 = C.Gray, TextSize = 13 })
 local countdownText = make("TextLabel", { Parent = loadScreen, BackgroundTransparency = 1, Position = UDim2.new(0.5, -140, 0.46, 36), Size = UDim2.new(0, 280, 0, 30), Font = Enum.Font.GothamBold, Text = "3", TextColor3 = C.BlueL, TextSize = 24 })
 local barBg = make("Frame", { Parent = loadScreen, BackgroundColor3 = C.Track, BorderSizePixel = 0, Position = UDim2.new(0.5, -130, 0.46, 74), Size = UDim2.new(0, 260, 0, 6) })
@@ -702,6 +803,8 @@ local function buildMainWindow(gameTypeName)
     closeBtn.MouseButton1Click:Connect(function()
         tw(main, {Size = UDim2.new(0, 0, 0, 0), Position = UDim2.new(0.5, 0, 0.5, 0)}, 0.2)
         tdelay(0.25, function()
+            TaskManager.stopAll()
+            VisualFX.clear()
             stopFly() setNoclip(false) wsActive = false
             sg:Destroy()
         end)
@@ -747,58 +850,55 @@ local function newTab(sidebar, content, name, icon)
     return page
 end
 
--- ==================== 自动化功能 (基于真实脚本模式) ====================
+-- ==================== 自动化功能 (Heartbeat 驱动, 替代 while 循环) ====================
 local AutoState = {}
 
 -- [自动点击/训练] 三种方式: 1.VirtualInputManager模拟 2.GUI按钮点击 3.ClickDetector
 local function startAutoClick(interval)
     AutoState.AutoClick = true
-    tspawn(function()
-        while AutoState.AutoClick do
-            -- 方式1: 模拟屏幕点击 (最通用, 移动端兼容)
-            tapScreen()
-            -- 方式2: 尝试点击训练按钮 (如果有)
-            pcall(function() clickButton("train") clickButton("click") clickButton("attack") clickButton("punch") end)
-            -- 方式3: 触发ClickDetector
-            if hasFCD then
-                pcall(function()
-                    for _, cd in pairs(cdCache) do
-                        if cd and cd.Parent then fireclickdetector(cd) end
-                    end
-                end)
-            end
-            twait(interval)
+    TaskManager.start("AutoClick", interval, function()
+        -- 方式1: 模拟屏幕点击 (最通用, 移动端兼容)
+        tapScreen()
+        -- 方式2: 尝试点击训练按钮 (如果有)
+        pcall(function() clickButton("train") clickButton("click") clickButton("attack") clickButton("punch") end)
+        -- 方式3: 触发ClickDetector
+        if hasFCD then
+            pcall(function()
+                for _, cd in pairs(cdCache) do
+                    if cd and cd.Parent then fireclickdetector(cd) end
+                end
+            end)
         end
     end)
 end
 
--- [自动农场] CFrame传送到最近NPC身边 (不盲发Remote, 仿照ThiAez脚本)
+-- [自动农场] CFrame传送到最近NPC身边 (Heartbeat驱动 + 视觉高亮)
 local function startAutoFarm(distance)
     AutoState.AutoFarm = true
     local safePos = nil
     local root = getRoot()
     if root then safePos = root.Position end
-    tspawn(function()
-        while AutoState.AutoFarm do
-            local enemy = findNearestEnemy()
-            if enemy then
-                local r = getRoot()
-                if r then
-                    if not safePos then safePos = r.Position end
-                    -- 传送到敌人上方 (避免卡住)
-                    r.CFrame = enemy.CFrame * CFrame.new(0, distance or 5, 0)
-                    r.Velocity = Vector3.zero
-                    -- 同时模拟攻击
-                    tapScreen()
-                end
-            else
-                -- 没敌人就回安全位置
-                local r = getRoot()
-                if r and safePos then
-                    r.CFrame = CFrame.new(safePos)
-                end
+    TaskManager.start("AutoFarm", 0.5, function()
+        local enemy = findNearestEnemy()
+        if enemy then
+            local r = getRoot()
+            if r then
+                if not safePos then safePos = r.Position end
+                -- 传送到敌人上方 (避免卡住)
+                r.CFrame = enemy.CFrame * CFrame.new(0, distance or 5, 0)
+                r.Velocity = Vector3.zero
+                -- 同时模拟攻击
+                tapScreen()
+                -- 视觉高亮目标 (老外脚本特色)
+                VisualFX.highlightTarget(enemy)
             end
-            twait(0.5) -- 0.5秒间隔, 不卡顿
+        else
+            -- 没敌人就回安全位置, 清除高亮
+            VisualFX.clear()
+            local r = getRoot()
+            if r and safePos then
+                r.CFrame = CFrame.new(safePos)
+            end
         end
     end)
 end
@@ -806,21 +906,16 @@ end
 -- [自动重生] 点击GUI重生按钮 (不盲发Remote)
 local function startAutoRebirth()
     AutoState.AutoRebirth = true
-    tspawn(function()
-        while AutoState.AutoRebirth do
-            -- 尝试点击重生/转生按钮
-            local clicked = false
-            clicked = clickButton("rebirth") or clicked
-            clicked = clickButton("prestige") or clicked
-            clicked = clickButton("reset") or clicked
-            clicked = clickButton("重生") or clicked
-            clicked = clickButton("转生") or clicked
-            -- 如果没找到按钮, 尝试Remote
-            if not clicked then
-                local r = getRemoteFuzzy("rebirth", "prestige", "reset")
-                if r then fireRemote(r) end
-            end
-            twait(1) -- 1秒间隔
+    TaskManager.start("AutoRebirth", 1, function()
+        local clicked = false
+        clicked = clickButton("rebirth") or clicked
+        clicked = clickButton("prestige") or clicked
+        clicked = clickButton("reset") or clicked
+        clicked = clickButton("重生") or clicked
+        clicked = clickButton("转生") or clicked
+        if not clicked then
+            local r = getRemoteFuzzy("rebirth", "prestige", "reset")
+            if r then fireRemote(r) end
         end
     end)
 end
@@ -828,22 +923,17 @@ end
 -- [自动购买升级] 点击GUI商店按钮 (不盲发Remote)
 local function startAutoBuy()
     AutoState.AutoBuy = true
-    tspawn(function()
-        while AutoState.AutoBuy do
-            -- 尝试点击商店里的升级按钮
-            local clicked = false
-            clicked = clickButton("buy") or clicked
-            clicked = clickButton("upgrade") or clicked
-            clicked = clickButton("purchase") or clicked
-            clicked = clickButton("购买") or clicked
-            clicked = clickButton("升级") or clicked
-            clicked = clickButton("max") or clicked
-            -- 如果没找到按钮, 尝试Remote
-            if not clicked then
-                local r = getRemoteFuzzy("buy", "upgrade", "purchase")
-                if r then fireRemote(r, 1) end
-            end
-            twait(0.5) -- 0.5秒间隔
+    TaskManager.start("AutoBuy", 0.5, function()
+        local clicked = false
+        clicked = clickButton("buy") or clicked
+        clicked = clickButton("upgrade") or clicked
+        clicked = clickButton("purchase") or clicked
+        clicked = clickButton("购买") or clicked
+        clicked = clickButton("升级") or clicked
+        clicked = clickButton("max") or clicked
+        if not clicked then
+            local r = getRemoteFuzzy("buy", "upgrade", "purchase")
+            if r then fireRemote(r, 1) end
         end
     end)
 end
@@ -851,18 +941,14 @@ end
 -- [自动领取奖励] 点击GUI领取按钮
 local function startAutoClaim()
     AutoState.AutoClaim = true
-    tspawn(function()
-        while AutoState.AutoClaim do
-            local clicked = false
-            clicked = clickButton("claim") or clicked
-            clicked = clickButton("reward") or clicked
-            clicked = clickButton("领取") or clicked
-            clicked = clickButton("reward") or clicked
-            if not clicked then
-                local r = getRemoteFuzzy("claim", "reward")
-                if r then fireRemote(r) end
-            end
-            twait(2) -- 2秒间隔
+    TaskManager.start("AutoClaim", 2, function()
+        local clicked = false
+        clicked = clickButton("claim") or clicked
+        clicked = clickButton("reward") or clicked
+        clicked = clickButton("领取") or clicked
+        if not clicked then
+            local r = getRemoteFuzzy("claim", "reward")
+            if r then fireRemote(r) end
         end
     end)
 end
@@ -870,21 +956,18 @@ end
 -- [自动抽卡] 点击GUI抽卡按钮
 local function startAutoCard()
     AutoState.AutoCard = true
-    tspawn(function()
-        while AutoState.AutoCard do
-            local clicked = false
-            clicked = clickButton("roll") or clicked
-            clicked = clickButton("reroll") or clicked
-            clicked = clickButton("pull") or clicked
-            clicked = clickButton("card") or clicked
-            clicked = clickButton("open") or clicked
-            clicked = clickButton("抽卡") or clicked
-            clicked = clickButton("重抽") or clicked
-            if not clicked then
-                local r = getRemoteFuzzy("card", "roll", "reroll", "pull", "open")
-                if r then fireRemote(r) end
-            end
-            twait(0.5)
+    TaskManager.start("AutoCard", 0.5, function()
+        local clicked = false
+        clicked = clickButton("roll") or clicked
+        clicked = clickButton("reroll") or clicked
+        clicked = clickButton("pull") or clicked
+        clicked = clickButton("card") or clicked
+        clicked = clickButton("open") or clicked
+        clicked = clickButton("抽卡") or clicked
+        clicked = clickButton("重抽") or clicked
+        if not clicked then
+            local r = getRemoteFuzzy("card", "roll", "reroll", "pull", "open")
+            if r then fireRemote(r) end
         end
     end)
 end
@@ -892,18 +975,15 @@ end
 -- [自动装备最佳] 点击GUI装备按钮
 local function startAutoEquip()
     AutoState.AutoEquip = true
-    tspawn(function()
-        while AutoState.AutoEquip do
-            local clicked = false
-            clicked = clickButton("equip") or clicked
-            clicked = clickButton("equipbest") or clicked
-            clicked = clickButton("equip best") or clicked
-            clicked = clickButton("装备") or clicked
-            if not clicked then
-                local r = getRemoteFuzzy("equip", "equipcard")
-                if r then fireRemote(r, "best") end
-            end
-            twait(1)
+    TaskManager.start("AutoEquip", 1, function()
+        local clicked = false
+        clicked = clickButton("equip") or clicked
+        clicked = clickButton("equipbest") or clicked
+        clicked = clickButton("equip best") or clicked
+        clicked = clickButton("装备") or clicked
+        if not clicked then
+            local r = getRemoteFuzzy("equip", "equipcard")
+            if r then fireRemote(r, "best") end
         end
     end)
 end
@@ -911,17 +991,14 @@ end
 -- [自动出售低级] 点击GUI出售按钮
 local function startAutoSell()
     AutoState.AutoSell = true
-    tspawn(function()
-        while AutoState.AutoSell do
-            local clicked = false
-            clicked = clickButton("sell") or clicked
-            clicked = clickButton("delete") or clicked
-            clicked = clickButton("出售") or clicked
-            if not clicked then
-                local r = getRemoteFuzzy("sell", "delete")
-                if r then fireRemote(r, "low") end
-            end
-            twait(2)
+    TaskManager.start("AutoSell", 2, function()
+        local clicked = false
+        clicked = clickButton("sell") or clicked
+        clicked = clickButton("delete") or clicked
+        clicked = clickButton("出售") or clicked
+        if not clicked then
+            local r = getRemoteFuzzy("sell", "delete")
+            if r then fireRemote(r, "low") end
         end
     end)
 end
@@ -929,19 +1006,16 @@ end
 -- [自动天赋点] 点击GUI天赋按钮
 local function startAutoPerk()
     AutoState.AutoPerk = true
-    tspawn(function()
-        while AutoState.AutoPerk do
-            local clicked = false
-            clicked = clickButton("perk") or clicked
-            clicked = clickButton("talent") or clicked
-            clicked = clickButton("skill") or clicked
-            clicked = clickButton("invest") or clicked
-            clicked = clickButton("天赋") or clicked
-            if not clicked then
-                local r = getRemoteFuzzy("perk", "skill", "talent", "invest", "allocate")
-                if r then fireRemote(r, 1) end
-            end
-            twait(0.5)
+    TaskManager.start("AutoPerk", 0.5, function()
+        local clicked = false
+        clicked = clickButton("perk") or clicked
+        clicked = clickButton("talent") or clicked
+        clicked = clickButton("skill") or clicked
+        clicked = clickButton("invest") or clicked
+        clicked = clickButton("天赋") or clicked
+        if not clicked then
+            local r = getRemoteFuzzy("perk", "skill", "talent", "invest", "allocate")
+            if r then fireRemote(r, 1) end
         end
     end)
 end
@@ -949,18 +1023,15 @@ end
 -- [自动药水] 点击GUI药水按钮
 local function startAutoPotion()
     AutoState.AutoPotion = true
-    tspawn(function()
-        while AutoState.AutoPotion do
-            local clicked = false
-            clicked = clickButton("use") or clicked
-            clicked = clickButton("drink") or clicked
-            clicked = clickButton("potion") or clicked
-            clicked = clickButton("使用") or clicked
-            if not clicked then
-                local r = getRemoteFuzzy("use", "activate", "drink")
-                if r then fireRemote(r, "potion") end
-            end
-            twait(2)
+    TaskManager.start("AutoPotion", 2, function()
+        local clicked = false
+        clicked = clickButton("use") or clicked
+        clicked = clickButton("drink") or clicked
+        clicked = clickButton("potion") or clicked
+        clicked = clickButton("使用") or clicked
+        if not clicked then
+            local r = getRemoteFuzzy("use", "activate", "drink")
+            if r then fireRemote(r, "potion") end
         end
     end)
 end
@@ -968,23 +1039,19 @@ end
 -- [自动宝箱] 传送到宝箱位置 (不盲发Remote)
 local function startAutoChest()
     AutoState.AutoChest = true
-    tspawn(function()
-        while AutoState.AutoChest do
-            local chests = findChests()
-            local root = getRoot()
-            if root and #chests > 0 then
-                for _, chest in pairs(chests) do
-                    if not AutoState.AutoChest then break end
-                    if chest and chest.Parent then
-                        pcall(function()
-                            root.CFrame = chest.CFrame + Vector3.new(0, 3, 0)
-                            root.Velocity = Vector3.zero
-                        end)
-                        twait(0.5)
-                    end
+    TaskManager.start("AutoChest", 2, function()
+        local chests = findChests()
+        local root = getRoot()
+        if root and #chests > 0 then
+            for _, chest in pairs(chests) do
+                if not AutoState.AutoChest then break end
+                if chest and chest.Parent then
+                    pcall(function()
+                        root.CFrame = chest.CFrame + Vector3.new(0, 3, 0)
+                        root.Velocity = Vector3.zero
+                    end)
+                    twait(0.5)
                 end
-            else
-                twait(2)
             end
         end
     end)
@@ -995,7 +1062,7 @@ local function buildMaintenanceTab(sidebar, content)
     local tm = newTab(sidebar, content, "维护", "🔧")
 
     label(tm, "—— 运行状态 ——")
-    local sl = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 28), Font = Enum.Font.GothamSemibold, Text = "  ✅ v7.0 真实模式运行中", TextColor3 = C.Green, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left })
+    local sl = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 28), Font = Enum.Font.GothamSemibold, Text = "  ✅ v8.0 Heartbeat引擎运行中", TextColor3 = C.Green, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left })
     corner(sl, 8) stroke(sl, C.Div, 1)
 
     label(tm, "—— 紧急操作 ——")
@@ -1003,6 +1070,8 @@ local function buildMaintenanceTab(sidebar, content)
         for k in pairs(AutoState) do AutoState[k] = false end
         for k in pairs(Flags) do Flags[k] = false end
         twait(0.2)
+        TaskManager.stopAll()
+        VisualFX.clear()
         stopAllConns()
         stopFly()
         setNoclip(false)
@@ -1115,7 +1184,7 @@ local function buildMaintenanceTab(sidebar, content)
     end)
 
     label(tm, "—— 关于 ——")
-    local ab = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 50), Font = Enum.Font.GothamSemibold, Text = "  ypx Hub v7.0 © ypx\n  真实模式 · 基于rscripts.net模式重写\n  RightShift 显隐 · 悬浮按钮可拖", TextColor3 = C.Gray, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top })
+    local ab = make("TextLabel", { Parent = tm, BackgroundColor3 = C.Card, BorderSizePixel = 0, Size = UDim2.new(1, -4, 0, 50), Font = Enum.Font.GothamSemibold, Text = "  ypx Hub v8.0 © ypx\n  Heartbeat引擎 · 基于rscripts.net/scriptblox.com模式\n  RightShift 显隐 · 悬浮按钮可拖 · 目标高亮", TextColor3 = C.Gray, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top })
     corner(ab, 8) stroke(ab, C.Div, 1)
 end
 
@@ -1139,10 +1208,10 @@ local function buildUniversalMenu(sidebar, content, gameName)
 
     label(tp, "—— 通用自动化 ——")
     local clickInterval = 0.5
-    toggle(tp, "自动点击(通用)", false, function(v) if v then startAutoClick(clickInterval) else AutoState.AutoClick = false end end)
+    toggle(tp, "自动点击(通用)", false, function(v) if v then startAutoClick(clickInterval) else AutoState.AutoClick = false TaskManager.stop("AutoClick") end end)
     slider(tp, "点击间隔(秒)", 0.1, 5, 0.5, function(v) clickInterval = v end)
-    toggle(tp, "自动农场(传送)", false, function(v) if v then startAutoFarm(5) else AutoState.AutoFarm = false end end)
-    toggle(tp, "自动宝箱", false, function(v) if v then startAutoChest() else AutoState.AutoChest = false end end)
+    toggle(tp, "自动农场(传送)", false, function(v) if v then startAutoFarm(5) else AutoState.AutoFarm = false TaskManager.stop("AutoFarm") VisualFX.clear() end end)
+    toggle(tp, "自动宝箱", false, function(v) if v then startAutoChest() else AutoState.AutoChest = false TaskManager.stop("AutoChest") end end)
 
     local tt = newTab(sidebar, content, "传送", "📍")
     label(tt, "—— 快速传送 ——")
@@ -1163,7 +1232,7 @@ local function buildUniversalMenu(sidebar, content, gameName)
             Lighting.GlobalShadows = false Lighting.FogEnd = 9e9
         end) end
     end)
-    toggle(tv, "全亮", false, function(v) Flags.FB = v if v then tspawn(function() while Flags.FB do Lighting.ClockTime = 14 Lighting.Brightness = 2 twait(1) end end) end end)
+    toggle(tv, "全亮", false, function(v) Flags.FB = v if v then TaskManager.start("FullBright", 1, function() Lighting.ClockTime = 14 Lighting.Brightness = 2 end) else TaskManager.stop("FullBright") end end)
 
     buildMaintenanceTab(sidebar, content)
 end
@@ -1175,44 +1244,44 @@ local function buildAnimeMenu(sidebar, content, gameName)
     label(t1, "—— 自动训练/攻击 ——")
     local clickD = 0.5
     toggle(t1, "自动点击训练", false, function(v)
-        if v then startAutoClick(clickD) else AutoState.AutoClick = false end
+        if v then startAutoClick(clickD) else AutoState.AutoClick = false TaskManager.stop("AutoClick") end
     end)
     slider(t1, "点击间隔(秒)", 0.1, 3, 0.5, function(v) clickD = v end)
 
     label(t1, "—— 自动农场 ——")
     local farmDist = 5
     toggle(t1, "自动农场(传送杀怪)", false, function(v)
-        if v then startAutoFarm(farmDist) else AutoState.AutoFarm = false end
+        if v then startAutoFarm(farmDist) else AutoState.AutoFarm = false TaskManager.stop("AutoFarm") VisualFX.clear() end
     end)
     slider(t1, "农场高度", 1, 20, 5, function(v) farmDist = v end)
 
     label(t1, "—— 自动升级 ——")
     toggle(t1, "自动购买升级", false, function(v)
-        if v then startAutoBuy() else AutoState.AutoBuy = false end
+        if v then startAutoBuy() else AutoState.AutoBuy = false TaskManager.stop("AutoBuy") end
     end)
     toggle(t1, "自动重生/转生", false, function(v)
-        if v then startAutoRebirth() else AutoState.AutoRebirth = false end
+        if v then startAutoRebirth() else AutoState.AutoRebirth = false TaskManager.stop("AutoRebirth") end
     end)
 
     label(t1, "—— 自动领取 ——")
     toggle(t1, "自动领取奖励", false, function(v)
-        if v then startAutoClaim() else AutoState.AutoClaim = false end
+        if v then startAutoClaim() else AutoState.AutoClaim = false TaskManager.stop("AutoClaim") end
     end)
     toggle(t1, "自动宝箱", false, function(v)
-        if v then startAutoChest() else AutoState.AutoChest = false end
+        if v then startAutoChest() else AutoState.AutoChest = false TaskManager.stop("AutoChest") end
     end)
 
     -- 卡牌标签
     local t2 = newTab(sidebar, content, "卡牌", "🎴")
     label(t2, "—— 卡牌自动化 ——")
     toggle(t2, "自动抽卡(Reroll)", false, function(v)
-        if v then startAutoCard() else AutoState.AutoCard = false end
+        if v then startAutoCard() else AutoState.AutoCard = false TaskManager.stop("AutoCard") end
     end)
     toggle(t2, "自动装备最佳", false, function(v)
-        if v then startAutoEquip() else AutoState.AutoEquip = false end
+        if v then startAutoEquip() else AutoState.AutoEquip = false TaskManager.stop("AutoEquip") end
     end)
     toggle(t2, "自动出售低级", false, function(v)
-        if v then startAutoSell() else AutoState.AutoSell = false end
+        if v then startAutoSell() else AutoState.AutoSell = false TaskManager.stop("AutoSell") end
     end)
     button(t2, "🔄 一键抽卡x10", function()
         for i = 1, 10 do
@@ -1234,7 +1303,7 @@ local function buildAnimeMenu(sidebar, content, gameName)
     local t3 = newTab(sidebar, content, "技能树", "🌳")
     label(t3, "—— 天赋/技能自动化 ——")
     toggle(t3, "自动投入天赋点", false, function(v)
-        if v then startAutoPerk() else AutoState.AutoPerk = false end
+        if v then startAutoPerk() else AutoState.AutoPerk = false TaskManager.stop("AutoPerk") end
     end)
     button(t3, "📱 打开技能树", function()
         clickButton("phone") clickButton("skill") clickButton("tree") clickButton("perk") clickButton("talent")
@@ -1251,7 +1320,7 @@ local function buildAnimeMenu(sidebar, content, gameName)
     local t4 = newTab(sidebar, content, "商店", "🛒")
     label(t4, "—— 药水自动化 ——")
     toggle(t4, "自动使用药水", false, function(v)
-        if v then startAutoPotion() else AutoState.AutoPotion = false end
+        if v then startAutoPotion() else AutoState.AutoPotion = false TaskManager.stop("AutoPotion") end
     end)
     button(t4, "💊 一键使用药水", function()
         clickButton("use") clickButton("drink") clickButton("potion") clickButton("luck")
@@ -1308,7 +1377,7 @@ local function buildAnimeMenu(sidebar, content, gameName)
             Lighting.GlobalShadows = false Lighting.FogEnd = 9e9
         end) end
     end)
-    toggle(t7, "全亮", false, function(v) Flags.FB = v if v then tspawn(function() while Flags.FB do Lighting.ClockTime = 14 Lighting.Brightness = 2 twait(1) end end) end end)
+    toggle(t7, "全亮", false, function(v) Flags.FB = v if v then TaskManager.start("FullBright", 1, function() Lighting.ClockTime = 14 Lighting.Brightness = 2 end) else TaskManager.stop("FullBright") end end)
 
     buildMaintenanceTab(sidebar, content)
 end
@@ -1436,7 +1505,7 @@ tspawn(function()
     end)
 
     -- 加载通知
-    local nt = loadOk and ("✅ " .. (TypeNames[gameType] or "通用") .. "  ·  v7.0 © ypx") or "⚠️ 维护模式  ·  © ypx"
+    local nt = loadOk and ("✅ " .. (TypeNames[gameType] or "通用") .. "  ·  v8.0 © ypx") or "⚠️ 维护模式  ·  © ypx"
     local notif = make("TextLabel", {
         Parent = sg, BackgroundColor3 = loadOk and C.BlueD or C.Orange, BorderSizePixel = 0,
         Position = UDim2.new(0.5, -130, 0, -40), Size = UDim2.new(0, 260, 0, 34),
@@ -1455,12 +1524,12 @@ tspawn(function()
     local rCount = 0 for _ in pairs(remoteCache) do rCount = rCount + 1 end
     local cdCount = #cdCache
     local btnCount = 0 for _ in pairs(buttonCache) do btnCount = btnCount + 1 end
-    print("  ✅ ypx Hub v7.0 真实模式已加载!")
+    print("  ✅ ypx Hub v8.0 Heartbeat引擎已加载!")
     print("  游戏类型: " .. (TypeNames[gameType] or "通用"))
     print("  游戏名称: " .. tostring(gameName))
     print("  PlaceId: " .. tostring(placeId))
     print("  缓存: " .. rCount .. " Remote · " .. cdCount .. " ClickDetector · " .. btnCount .. " 按钮")
-    print("  核心模式: 点击模拟+CFrame传送+GUI按钮 (不盲发Remote)")
+    print("  核心引擎: Heartbeat驱动+点击模拟+CFrame传送+目标高亮 (不盲发Remote)")
     print("  按 RightShift 或悬浮按钮 显示/隐藏")
     print("  © 2026 ypx")
     print("═══════════════════════════════════")
